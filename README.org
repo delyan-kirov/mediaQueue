@@ -1,1 +1,25 @@
 * Pokiclone
+
+* Idea of gameplay
+The game has the following components
+- Game menu
+- Game map
+- Level screen
+
+** Game menu
+- Audio
+  1. Volume up
+  2. Volume down
+  3. Valume none
+- Display
+  1. Brigtness up
+  2. Brightness down
+- Quit
+
+** Game map
+- Menu of levels
+
+** Level 
+A pet style game similar to pokemon or wow pet battles
+- Text in
+- Key out

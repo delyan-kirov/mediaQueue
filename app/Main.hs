@@ -20,18 +20,20 @@ import Raylib.Core (
   isKeyPressed,
   setExitKey,
   setTargetFPS,
+  windowShouldClose,
  )
 import Raylib.Core.Text (drawText)
 import Raylib.Core.Textures (drawTexturePro, drawTextureRec, loadTexture, unloadTexture)
 import Raylib.Types (
   Color (Color),
-  KeyboardKey (KeyA, KeyD, KeyDown, KeyLeft, KeyNull, KeyRight, KeyS, KeySpace, KeyT, KeyUp, KeyW),
+  KeyboardKey (KeyA, KeyD, KeyDown, KeyEnter, KeyLeft, KeyNull, KeyRight, KeyS, KeySpace, KeyT, KeyUp, KeyW),
   Rectangle (Rectangle, rectangle'height, rectangle'width, rectangle'x, rectangle'y),
   Texture,
   Vector2 (Vector2, vector2'x, vector2'y),
  )
 import Raylib.Util (WindowResources, whileWindowOpen0)
 import Raylib.Util.Colors qualified as Colors
+import System.Exit (exitWith, exitSuccess)
 
 default (Int)
 
@@ -47,12 +49,15 @@ makeLensesFor
   ''Rectangle
 
 data GameMode = GameModeOne | GameModeTwo | GameModeThree
+data GameMenu = Volume | Brightness | Quit deriving (Show, Eq)
 
 data GameState = GameState
   { _gameMode :: IORef GameMode
   , _entity :: IORef Vector2
   , _txtPrompt :: IORef Int
   , _backGround :: Texture
+  , _menu :: IORef GameMenu
+  , _resources :: WindowResources
   }
 
 $(makeLenses ''GameState)
@@ -62,6 +67,12 @@ nextGameMode gameMode' = case gameMode' of
   GameModeOne -> GameModeTwo
   GameModeTwo -> GameModeThree
   GameModeThree -> GameModeOne
+
+nextGameMenu :: GameMenu -> GameMenu
+nextGameMenu gameMenu' = case gameMenu' of
+  Volume -> Brightness
+  Brightness -> Quit
+  Quit -> Volume
 
 prompt :: [String]
 prompt =
@@ -77,12 +88,15 @@ initGameState raylib = do
   rectangleRef <- newIORef $ Vector2 0.0 0.0
   txtPromptRef <- newIORef 0
   backGround' <- loadTexture "./resources/backGround.png" raylib
+  gameMenu <- newIORef Quit
   return $
     GameState
       { _gameMode = gameModeRef
       , _entity = rectangleRef
       , _txtPrompt = txtPromptRef
       , _backGround = backGround'
+      , _menu = gameMenu
+      , _resources = raylib
       }
 
 moveDirection :: Vector2 -> IO Vector2
@@ -125,8 +139,8 @@ readPrompt newTxtPrompt = do
       return $ newTxtPrompt' + 1
     else return newTxtPrompt'
 
-drawTxtFromPrompt :: Int -> [String] -> IO ()
-drawTxtFromPrompt n txt =
+drawTxtFromPrompt :: Int -> Color -> [String] -> IO ()
+drawTxtFromPrompt n color txt =
   when (n /= 0) $
     mapM_
       ( \i ->
@@ -135,7 +149,7 @@ drawTxtFromPrompt n txt =
             50 -- x-axis
             (100 + 45 * i) -- y-axis
             30 -- size
-            Colors.black
+            color
       )
       [0 .. n - 1]
 
@@ -150,7 +164,7 @@ gameLoopModeOne gameState = do
   refreshTextArea gameState
   drawText "POG" 50 50 40 Colors.rayWhite
   newTxtPrompt <- readPrompt (gameState ^. txtPrompt)
-  drawTxtFromPrompt newTxtPrompt prompt
+  drawTxtFromPrompt newTxtPrompt Colors.black prompt
 
 gameLoopModeTwo :: GameState -> IO ()
 gameLoopModeTwo gameState = do
@@ -166,8 +180,8 @@ gameLoopModeTwo gameState = do
     Vector2{vector2'x = newPosition.vector2'x, vector2'y = newPosition.vector2'y}
     Colors.pink
 
-gameLoopModeThree :: GameState -> IO ()
-gameLoopModeThree gameState = do
+gameLoopModeMenu :: GameState -> IO ()
+gameLoopModeMenu gameState = do
   clearBackground $ Color 100 100 200 0
   screenWidth <- getScreenWidth
   screenHeight <- getScreenHeight
@@ -191,7 +205,22 @@ gameLoopModeThree gameState = do
       }
     0.1
     Colors.rayWhite
-  drawText "Basic raylib window" 50 50 40 Colors.rayWhite
+  drawText (show Quit) 50 (100 + 45) 30 Colors.rayWhite
+  drawText (show Volume) 50 (100 + 45 * 2) 30 Colors.rayWhite
+  drawText (show Brightness) 50 (100 + 45 * 3) 30 Colors.rayWhite
+  currSelectedMenueOption <- readIORef $ gameState ^. menu
+  shouldMoveDown <- isKeyPressed KeyDown
+  when shouldMoveDown $ modifyIORef (gameState ^. menu) nextGameMenu
+  shouldMoveUp <- isKeyPressed KeyUp
+  when shouldMoveUp $ modifyIORef (gameState ^. menu) $ nextGameMenu . nextGameMenu
+  makeAction <- isKeyPressed KeyEnter
+  when (currSelectedMenueOption == Quit && makeAction) $
+    closeWindow gameState._resources >>
+    exitSuccess
+  case currSelectedMenueOption of
+    Quit -> drawText (show Quit) 50 (100 + 45) 30 Colors.red
+    Volume -> drawText (show Volume) 50 (100 + 45 * 2) 30 Colors.red
+    Brightness -> drawText (show Brightness) 50 (100 + 45 * 3) 30 Colors.red
 
 refreshTextArea :: GameState -> IO ()
 refreshTextArea gameState = do
@@ -207,12 +236,12 @@ gameloop gameState = do
   case currMode of
     GameModeOne -> gameLoopModeOne gameState
     GameModeTwo -> gameLoopModeTwo gameState
-    GameModeThree -> gameLoopModeThree gameState
+    GameModeThree -> gameLoopModeMenu gameState
   endDrawing
 
 main :: IO ()
 main = do
-  raylib <- initWindow 1000 1000 "Pokiclone"
+  raylib <- initWindow 600 600 "Pokiclone"
   setTargetFPS 60
   setExitKey KeyNull
   gameState <- initGameState raylib
