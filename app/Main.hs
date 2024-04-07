@@ -2,9 +2,10 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TemplateHaskell #-}
+
 {-# OPTIONS -Wall #-}
 
-module Main where
+module Main (main) where
 
 import Control.Lens (makeLenses, makeLensesFor)
 import Control.Monad (when)
@@ -21,17 +22,18 @@ import Raylib.Core (
   isKeyPressed,
   setExitKey,
   setTargetFPS,
+  windowShouldClose,
  )
 import Raylib.Core.Text (drawText)
 import Raylib.Core.Textures (drawTexturePro, drawTextureRec, loadTexture)
 import Raylib.Types (
   Color (Color),
-  KeyboardKey (KeyA, KeyD, KeyDown, KeyEnter, KeyLeft, KeyNull, KeyRight, KeyS, KeySpace, KeyT, KeyUp, KeyW),
+  KeyboardKey (KeyA, KeyD, KeyDown, KeyEnter, KeyLeft, KeyNull, KeyRight, KeyS, KeySpace, KeyT, KeyUp, KeyW, KeyX),
   Rectangle (Rectangle, rectangle'height, rectangle'width, rectangle'x, rectangle'y),
   Texture (Texture),
   Vector2 (Vector2, vector2'x, vector2'y),
  )
-import Raylib.Util (WindowResources, raylibApplication)
+import Raylib.Util (WindowResources, whileWindowOpen, whileWindowOpen_)
 import Raylib.Util.Colors qualified as Colors
 import System.Exit (exitSuccess)
 
@@ -95,6 +97,7 @@ initApp :: IO AppState
 initApp = do
   w <- initWindow 600 600 "Pokiclone"
   setTargetFPS 60
+  setExitKey KeyNull
   backGroundTexture <- loadTexture "./resources/backGround.png" w
   return $ defaultState w backGroundTexture
 
@@ -126,13 +129,6 @@ moveDirection direction = do
   if newX /= direction.vector2'x || newY /= direction.vector2'y
     then return newPosition
     else return direction
-
-switchMode :: AppState -> IO AppState
-switchMode appState = do
-  shouldGoNext <- isKeyPressed KeySpace
-  if shouldGoNext
-    then return (appState{mode = nextCycle appState.mode})
-    else return appState
 
 gameLoopModeOne :: AppState -> IO AppState
 gameLoopModeOne appState = do
@@ -197,8 +193,8 @@ gameLoopModeTwo appState = do
 gameLoopModeMenu :: AppState -> IO AppState
 gameLoopModeMenu appState = do
   clearBackground $ Color 100 100 200 0
-  screenWidth <- getScreenWidth
-  screenHeight <- getScreenHeight
+  screenWidth <- (+ 10) <$> getScreenWidth
+  screenHeight <- (+ 10) <$> getScreenHeight
   drawTexturePro
     appState.backGround
     Rectangle
@@ -233,7 +229,7 @@ gameLoopModeMenu appState = do
         | otherwise -> appState
   makeAction <- isKeyPressed KeyEnter
   when (appState'.menu == Quit && makeAction) $
-    closeWindow appState'.resources
+    closeWindow appState'.window
       >> exitSuccess
   case appState'.menu of
     Quit -> drawText (show Quit) 50 (100 + 45) 30 Colors.red >> return appState'
@@ -249,13 +245,15 @@ mainloop appState = do
     GameModeOne -> gameLoopModeOne appState'
     GameModeTwo -> gameLoopModeTwo appState'
     GameModeThree -> gameLoopModeMenu appState'
+
   endDrawing
   return appState''
+ where
+  switchMode :: AppState -> IO AppState
+  switchMode appState = do
+    shouldGoNext <- isKeyPressed KeySpace
+    if shouldGoNext
+      then return (appState{mode = nextCycle appState.mode})
+      else return appState
 
-shouldClose :: AppState -> IO Bool
-shouldClose = const windowShouldClose
-
-anihilate :: AppState -> IO Bool
-anihilate appState = closeWindow appState.window
-
-$(raylibApplication 'initApp 'mainloop 'shouldClose 'anihilate)
+main = whileWindowOpen_ mainloop =<< initApp
