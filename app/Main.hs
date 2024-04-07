@@ -2,10 +2,11 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS -Wall #-}
 
-module Main (main) where
+module Main where
 
-import Control.Lens (makeLenses, makeLensesFor, (^.))
+import Control.Lens (makeLenses, makeLensesFor)
 import Control.Monad (when)
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef, writeIORef)
 import Raylib.Core (
@@ -20,22 +21,25 @@ import Raylib.Core (
   isKeyPressed,
   setExitKey,
   setTargetFPS,
-  windowShouldClose,
  )
 import Raylib.Core.Text (drawText)
-import Raylib.Core.Textures (drawTexturePro, drawTextureRec, loadTexture, unloadTexture)
+import Raylib.Core.Textures (drawTexturePro, drawTextureRec, loadTexture)
 import Raylib.Types (
   Color (Color),
   KeyboardKey (KeyA, KeyD, KeyDown, KeyEnter, KeyLeft, KeyNull, KeyRight, KeyS, KeySpace, KeyT, KeyUp, KeyW),
   Rectangle (Rectangle, rectangle'height, rectangle'width, rectangle'x, rectangle'y),
-  Texture,
+  Texture (Texture),
   Vector2 (Vector2, vector2'x, vector2'y),
  )
-import Raylib.Util (WindowResources, whileWindowOpen0)
+import Raylib.Util (WindowResources, raylibApplication)
 import Raylib.Util.Colors qualified as Colors
-import System.Exit (exitWith, exitSuccess)
+import System.Exit (exitSuccess)
 
 default (Int)
+
+class Cycle a where
+  nextCycle :: a -> a
+  previousCycle :: a -> a
 
 --
 
@@ -49,55 +53,50 @@ makeLensesFor
   ''Rectangle
 
 data GameMode = GameModeOne | GameModeTwo | GameModeThree
-data GameMenu = Volume | Brightness | Quit deriving (Show, Eq)
 
-data GameState = GameState
-  { _gameMode :: IORef GameMode
-  , _entity :: IORef Vector2
-  , _txtPrompt :: IORef Int
-  , _backGround :: Texture
-  , _menu :: IORef GameMenu
-  , _resources :: WindowResources
+instance Cycle GameMode where
+  nextCycle gameMode = case gameMode of
+    GameModeOne -> GameModeTwo
+    GameModeTwo -> GameModeThree
+    GameModeThree -> GameModeOne
+
+  previousCycle = nextCycle . nextCycle
+
+data GameMenu = Volume | Brightness | Quit deriving (Show, Eq)
+instance Cycle GameMenu where
+  nextCycle gameMenu = case gameMenu of
+    Volume -> Brightness
+    Brightness -> Quit
+    Quit -> Volume
+
+  previousCycle = nextCycle . nextCycle
+
+data AppState = AppState
+  { mode :: GameMode
+  , entity :: Vector2
+  , txtPrompt :: Int
+  , backGround :: Texture
+  , menu :: GameMenu
+  , window :: WindowResources
   }
 
-$(makeLenses ''GameState)
+defaultState :: WindowResources -> Texture -> AppState
+defaultState w backGroundTexture =
+  AppState
+    { mode = GameModeOne
+    , entity = Vector2 0.0 0.0
+    , txtPrompt = 0
+    , backGround = backGroundTexture
+    , menu = Quit
+    , window = w
+    }
 
-nextGameMode :: GameMode -> GameMode
-nextGameMode gameMode' = case gameMode' of
-  GameModeOne -> GameModeTwo
-  GameModeTwo -> GameModeThree
-  GameModeThree -> GameModeOne
-
-nextGameMenu :: GameMenu -> GameMenu
-nextGameMenu gameMenu' = case gameMenu' of
-  Volume -> Brightness
-  Brightness -> Quit
-  Quit -> Volume
-
-prompt :: [String]
-prompt =
-  [ "hello"
-  , "Get ready to follow this wonderful adventure with me!"
-  , "See this cool GUI"
-  , "Made with the superpower of raylib and haskell"
-  ]
-
-initGameState :: WindowResources -> IO GameState
-initGameState raylib = do
-  gameModeRef <- newIORef GameModeOne
-  rectangleRef <- newIORef $ Vector2 0.0 0.0
-  txtPromptRef <- newIORef 0
-  backGround' <- loadTexture "./resources/backGround.png" raylib
-  gameMenu <- newIORef Quit
-  return $
-    GameState
-      { _gameMode = gameModeRef
-      , _entity = rectangleRef
-      , _txtPrompt = txtPromptRef
-      , _backGround = backGround'
-      , _menu = gameMenu
-      , _resources = raylib
-      }
+initApp :: IO AppState
+initApp = do
+  w <- initWindow 600 600 "Pokiclone"
+  setTargetFPS 60
+  backGroundTexture <- loadTexture "./resources/backGround.png" w
+  return $ defaultState w backGroundTexture
 
 moveDirection :: Vector2 -> IO Vector2
 moveDirection direction = do
@@ -128,65 +127,80 @@ moveDirection direction = do
     then return newPosition
     else return direction
 
-readPrompt :: IORef Int -> IO Int
-readPrompt newTxtPrompt = do
-  newTxtPrompt' <- readIORef newTxtPrompt
-  let existMorePrompts = length prompt >= newTxtPrompt' + 1
-  shouldGoNext <- isKeyPressed KeyA
-  if shouldGoNext && existMorePrompts
-    then do
-      modifyIORef newTxtPrompt (+ 1)
-      return $ newTxtPrompt' + 1
-    else return newTxtPrompt'
-
-drawTxtFromPrompt :: Int -> Color -> [String] -> IO ()
-drawTxtFromPrompt n color txt =
-  when (n /= 0) $
-    mapM_
-      ( \i ->
-          drawText
-            (txt !! i)
-            50 -- x-axis
-            (100 + 45 * i) -- y-axis
-            30 -- size
-            color
-      )
-      [0 .. n - 1]
-
-switchMode :: IORef GameMode -> IO ()
-switchMode gameMode' = do
+switchMode :: AppState -> IO AppState
+switchMode appState = do
   shouldGoNext <- isKeyPressed KeySpace
-  when shouldGoNext $ modifyIORef gameMode' nextGameMode
+  if shouldGoNext
+    then return (appState{mode = nextCycle appState.mode})
+    else return appState
 
-gameLoopModeOne :: GameState -> IO ()
-gameLoopModeOne gameState = do
+gameLoopModeOne :: AppState -> IO AppState
+gameLoopModeOne appState = do
   clearBackground $ Color 50 160 160 1
-  refreshTextArea gameState
+  appState' <- refreshTextArea appState
   drawText "POG" 50 50 40 Colors.rayWhite
-  newTxtPrompt <- readPrompt (gameState ^. txtPrompt)
-  drawTxtFromPrompt newTxtPrompt Colors.black prompt
+  appState'' <- readPrompt appState'
+  drawTxtFromPrompt appState''.txtPrompt Colors.black prompt
+  return appState''
+ where
+  refreshTextArea :: AppState -> IO AppState
+  refreshTextArea appState = do
+    shouldRefresh <- isKeyPressed KeyT
+    if shouldRefresh
+      then return appState{txtPrompt = 0}
+      else return appState
 
-gameLoopModeTwo :: GameState -> IO ()
-gameLoopModeTwo gameState = do
+  readPrompt :: AppState -> IO AppState
+  readPrompt appState = do
+    let existMorePrompts = length prompt >= appState.txtPrompt + 1
+    shouldGoNext <- isKeyPressed KeyA
+    if shouldGoNext && existMorePrompts
+      then do
+        return $ appState{txtPrompt = appState.txtPrompt + 1}
+      else return appState
+
+  drawTxtFromPrompt :: Int -> Color -> [String] -> IO ()
+  drawTxtFromPrompt n color txt =
+    when (n /= 0) $
+      mapM_
+        ( \i ->
+            drawText
+              (txt !! i)
+              50 -- x-axis
+              (100 + 45 * i) -- y-axis
+              30 -- size
+              color
+        )
+        [0 .. n - 1]
+
+  prompt :: [String]
+  prompt =
+    [ "hello"
+    , "Get ready to follow this wonderful adventure with me!"
+    , "See this cool GUI"
+    , "Made with the superpower of raylib and haskell"
+    ]
+
+gameLoopModeTwo :: AppState -> IO AppState
+gameLoopModeTwo appState = do
   -- update position
-  oldPosition <- readIORef (gameState ^. entity)
-  newPosition <- moveDirection oldPosition
-  writeIORef (gameState ^. entity) newPosition
+  newPosition <- moveDirection appState.entity
   -- draw
   clearBackground $ Color 1 20 40 1
   drawTextureRec
-    gameState._backGround
+    appState.backGround
     Rectangle{rectangle'x = 0.0, rectangle'y = 0.0, rectangle'width = 100.0, rectangle'height = 100.0}
     Vector2{vector2'x = newPosition.vector2'x, vector2'y = newPosition.vector2'y}
     Colors.pink
+  return $ appState{entity = newPosition}
 
-gameLoopModeMenu :: GameState -> IO ()
-gameLoopModeMenu gameState = do
+gameLoopModeMenu :: AppState -> IO AppState
+gameLoopModeMenu appState = do
   clearBackground $ Color 100 100 200 0
   screenWidth <- getScreenWidth
   screenHeight <- getScreenHeight
   drawTexturePro
-    gameState._backGround
+    appState.backGround
     Rectangle
       { rectangle'x = 0.0
       , rectangle'y = 0.0
@@ -208,46 +222,40 @@ gameLoopModeMenu gameState = do
   drawText (show Quit) 50 (100 + 45) 30 Colors.rayWhite
   drawText (show Volume) 50 (100 + 45 * 2) 30 Colors.rayWhite
   drawText (show Brightness) 50 (100 + 45 * 3) 30 Colors.rayWhite
-  currSelectedMenueOption <- readIORef $ gameState ^. menu
+
   shouldMoveDown <- isKeyPressed KeyDown
-  when shouldMoveDown $ modifyIORef (gameState ^. menu) nextGameMenu
   shouldMoveUp <- isKeyPressed KeyUp
-  when shouldMoveUp $ modifyIORef (gameState ^. menu) $ nextGameMenu . nextGameMenu
+  let
+    appState' =
+      if
+        | shouldMoveDown -> appState{menu = nextCycle appState.menu}
+        | shouldMoveUp -> appState{menu = previousCycle appState.menu}
+        | otherwise -> appState
   makeAction <- isKeyPressed KeyEnter
-  when (currSelectedMenueOption == Quit && makeAction) $
-    closeWindow gameState._resources >>
-    exitSuccess
-  case currSelectedMenueOption of
-    Quit -> drawText (show Quit) 50 (100 + 45) 30 Colors.red
-    Volume -> drawText (show Volume) 50 (100 + 45 * 2) 30 Colors.red
-    Brightness -> drawText (show Brightness) 50 (100 + 45 * 3) 30 Colors.red
+  when (appState'.menu == Quit && makeAction) $
+    closeWindow appState'.resources
+      >> exitSuccess
+  case appState'.menu of
+    Quit -> drawText (show Quit) 50 (100 + 45) 30 Colors.red >> return appState'
+    Volume -> drawText (show Volume) 50 (100 + 45 * 2) 30 Colors.red >> return appState'
+    Brightness -> drawText (show Brightness) 50 (100 + 45 * 3) 30 Colors.red >> return appState'
 
-refreshTextArea :: GameState -> IO ()
-refreshTextArea gameState = do
-  shouldRefresh <- isKeyPressed KeyT
-  when shouldRefresh $ writeIORef (gameState ^. txtPrompt) 0
-
-gameloop :: GameState -> IO ()
-gameloop gameState = do
+mainloop :: AppState -> IO AppState
+mainloop appState = do
   beginDrawing
 
-  switchMode $ gameState ^. gameMode
-  currMode <- readIORef $ gameState ^. gameMode
-  case currMode of
-    GameModeOne -> gameLoopModeOne gameState
-    GameModeTwo -> gameLoopModeTwo gameState
-    GameModeThree -> gameLoopModeMenu gameState
+  appState' <- switchMode appState
+  appState'' <- case appState'.mode of
+    GameModeOne -> gameLoopModeOne appState'
+    GameModeTwo -> gameLoopModeTwo appState'
+    GameModeThree -> gameLoopModeMenu appState'
   endDrawing
+  return appState''
 
-main :: IO ()
-main = do
-  raylib <- initWindow 600 600 "Pokiclone"
-  setTargetFPS 60
-  setExitKey KeyNull
-  gameState <- initGameState raylib
+shouldClose :: AppState -> IO Bool
+shouldClose = const windowShouldClose
 
-  whileWindowOpen0 $ do
-    gameloop gameState
+anihilate :: AppState -> IO Bool
+anihilate appState = closeWindow appState.window
 
-  unloadTexture gameState._backGround raylib
-  closeWindow raylib
+$(raylibApplication 'initApp 'mainloop 'shouldClose 'anihilate)
