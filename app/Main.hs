@@ -37,6 +37,8 @@ import Raylib.Util (WindowResources, whileWindowOpen, whileWindowOpen_)
 import Raylib.Util.Colors qualified as Colors
 import System.Exit (exitSuccess)
 
+import Audio (scanAudio)
+
 default (Int)
 
 class Cycle a where
@@ -95,10 +97,10 @@ defaultState w backGroundTexture =
 
 initApp :: IO AppState
 initApp = do
-  w <- initWindow 600 600 "Pokiclone"
+  w <- initWindow 1200 1200 "Pokiclone"
   setTargetFPS 60
   setExitKey KeyNull
-  backGroundTexture <- loadTexture "./resources/backGround.png" w
+  backGroundTexture <- loadTexture "./resources/backGround1.png" w
   return $ defaultState w backGroundTexture
 
 moveDirection :: Vector2 -> IO Vector2
@@ -148,6 +150,7 @@ gameLoopModeOne appState = do
 
   readPrompt :: AppState -> IO AppState
   readPrompt appState = do
+    (\x -> drawTxtFromPrompt (length . concat $ x) Colors.rayWhite (concat x)) =<< scanAudio
     let existMorePrompts = length prompt >= appState.txtPrompt + 1
     shouldGoNext <- isKeyPressed KeyA
     if shouldGoNext && existMorePrompts
@@ -200,8 +203,8 @@ gameLoopModeMenu appState = do
     Rectangle
       { rectangle'x = 0.0
       , rectangle'y = 0.0
-      , rectangle'width = 800.0
-      , rectangle'height = 800.0
+      , rectangle'width = 600.0
+      , rectangle'height = 600.0
       }
     Rectangle
       { rectangle'x = 0.0

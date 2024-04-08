@@ -57,6 +57,28 @@ extra-doc-files:    CHANGELOG.md
 common warnings
     ghc-options: -Wall
 
+library
+    exposed-modules:
+      Audio
+
+    other-modules:
+      Paths_pokiclone
+
+    autogen-modules:
+      Paths_pokiclone
+
+    hs-source-dirs:
+      lib
+
+    ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+
+    build-depends: base ^>=4.16.4.0
+                 , ghc
+                 , process
+                 , extra
+
+    default-language: GHC2021
+
 executable pokiclone
     -- Import common warning flags.
     import:           warnings
@@ -71,9 +93,10 @@ executable pokiclone
     other-extensions: MultiWayIf
 
     -- Other library packages from which modules are imported.
-    build-depends:    base ^>=4.16.4.0
-                    , h-raylib
-                    , lens
+    build-depends: base ^>=4.16.4.0
+                 , h-raylib
+                 , pokiclone
+                 , lens
 
     -- Directories containing source files.
     hs-source-dirs:   app
