@@ -5,21 +5,24 @@
 
 {-# OPTIONS -Wall #-}
 
-module Main (main) where
+module Main where
 
 import Control.Lens (makeLenses, makeLensesFor)
 import Control.Monad (when)
-import Data.IORef (IORef, modifyIORef, newIORef, readIORef, writeIORef)
 import Raylib.Core (
   beginDrawing,
+  c'loadDroppedFiles,
+  c'unloadDroppedFiles,
   clearBackground,
   closeWindow,
   endDrawing,
   getScreenHeight,
   getScreenWidth,
   initWindow,
+  isFileDropped,
   isKeyDown,
   isKeyPressed,
+  loadDroppedFiles,
   setExitKey,
   setTargetFPS,
   windowShouldClose,
@@ -33,11 +36,12 @@ import Raylib.Types (
   Texture (Texture),
   Vector2 (Vector2, vector2'x, vector2'y),
  )
-import Raylib.Util (WindowResources, whileWindowOpen, whileWindowOpen_)
+import Raylib.Util (WindowResources, raylibApplication, whileWindowOpen, whileWindowOpen_)
 import Raylib.Util.Colors qualified as Colors
 import System.Exit (exitSuccess)
 
 import Audio (scanAudio)
+import Foreign (Storable (peek))
 
 default (Int)
 
@@ -97,7 +101,7 @@ defaultState w backGroundTexture =
 
 initApp :: IO AppState
 initApp = do
-  w <- initWindow 1200 1200 "Pokiclone"
+  w <- initWindow 1200 800 "Pokiclone"
   setTargetFPS 60
   setExitKey KeyNull
   backGroundTexture <- loadTexture "./resources/backGround1.png" w
@@ -134,7 +138,7 @@ moveDirection direction = do
 
 gameLoopModeOne :: AppState -> IO AppState
 gameLoopModeOne appState = do
-  clearBackground $ Color 50 160 160 1
+  clearBackground $ Color 1 20 40 1
   appState' <- refreshTextArea appState
   drawText "POG" 50 50 40 Colors.rayWhite
   appState'' <- readPrompt appState'
@@ -150,12 +154,11 @@ gameLoopModeOne appState = do
 
   readPrompt :: AppState -> IO AppState
   readPrompt appState = do
-    (\x -> drawTxtFromPrompt (length . concat $ x) Colors.rayWhite (concat x)) =<< scanAudio
+    (\x -> drawTxtFromPrompt (length $ concat x) Colors.rayWhite (concat x)) =<< scanAudio
     let existMorePrompts = length prompt >= appState.txtPrompt + 1
     shouldGoNext <- isKeyPressed KeyA
     if shouldGoNext && existMorePrompts
-      then do
-        return $ appState{txtPrompt = appState.txtPrompt + 1}
+      then return $ appState{txtPrompt = appState.txtPrompt + 1}
       else return appState
 
   drawTxtFromPrompt :: Int -> Color -> [String] -> IO ()
@@ -167,7 +170,7 @@ gameLoopModeOne appState = do
               (txt !! i)
               50 -- x-axis
               (100 + 45 * i) -- y-axis
-              30 -- size
+              24 -- size
               color
         )
         [0 .. n - 1]
@@ -239,8 +242,8 @@ gameLoopModeMenu appState = do
     Volume -> drawText (show Volume) 50 (100 + 45 * 2) 30 Colors.red >> return appState'
     Brightness -> drawText (show Brightness) 50 (100 + 45 * 3) 30 Colors.red >> return appState'
 
-mainloop :: AppState -> IO AppState
-mainloop appState = do
+mainLoop :: AppState -> IO AppState
+mainLoop appState = do
   beginDrawing
 
   appState' <- switchMode appState
@@ -259,4 +262,18 @@ mainloop appState = do
       then return (appState{mode = nextCycle appState.mode})
       else return appState
 
-main = whileWindowOpen_ mainloop =<< initApp
+shouldClose :: AppState -> IO Bool
+shouldClose = const windowShouldClose
+
+teardown :: AppState -> IO ()
+teardown s = closeWindow (window s)
+
+-- fileIsDropped <- isFileDropped
+-- when fileIsDropped $ do
+--   filePtr <- c'loadDroppedFiles
+--   print filePtr
+--   fileData <- peek filePtr
+--   print fileData
+--   c'unloadDroppedFiles filePtr
+
+$(raylibApplication 'initApp 'mainLoop 'shouldClose 'teardown)

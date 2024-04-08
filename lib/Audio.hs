@@ -7,10 +7,8 @@ import System.Process (readProcess)
 extractDeviceOutput :: String -> [String]
 extractDeviceOutput text =
   let appNames = extractPactlData text "\t\tapplication.name = "
-      ---
       appIds = extractPactlData text "\t\tobject.serial = "
       windows = zipWith (++) (zipWith (++) appNames (repText (length appNames) " - ")) appIds
-      ---
       medias = extractPactlData text "\t\tmedia.name = "
       volumes = extractVolumeInfo text
    in zipText " | " volumes (zipText " | " windows medias)
@@ -42,7 +40,11 @@ formatTablePretty xs = do
 scanAudio :: IO [[String]]
 scanAudio = do
   audioDeviceData <- readProcess "pactl" ["list", "sink-inputs"] ""
-  let audioDeviceList = split (== '|') <$> extractDeviceOutput audioDeviceData
+  let audioDeviceList =
+        formatTablePretty $
+          split (== '|')
+            <$> extractDeviceOutput
+              audioDeviceData
   return audioDeviceList
 
 -- Helper functions
@@ -51,6 +53,6 @@ repText :: Int -> String -> [String]
 repText n text = text <$ [1 .. n]
 
 zipText :: String -> [String] -> [String] -> [String]
-zipText spacers text1 text2 = do
+zipText spacers text1 text2 =
   let part1 = zipWith (++) text1 (repText (length text1) spacers)
-  zipWith (++) part1 text2
+   in zipWith (++) part1 text2
