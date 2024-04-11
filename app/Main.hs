@@ -244,7 +244,11 @@ gameLoopModeMenu appState = do
 
 mainLoop :: AppState -> IO AppState
 mainLoop appState = do
-  beginDrawing
+  fileIsDropped <- isFileDropped
+  when fileIsDropped $ do
+    filePtr <- loadDroppedFiles
+    print filePtr
+    beginDrawing
 
   appState' <- switchMode appState
   appState'' <- case appState'.mode of
@@ -267,13 +271,5 @@ shouldClose = const windowShouldClose
 
 teardown :: AppState -> IO ()
 teardown s = closeWindow (window s)
-
--- fileIsDropped <- isFileDropped
--- when fileIsDropped $ do
---   filePtr <- c'loadDroppedFiles
---   print filePtr
---   fileData <- peek filePtr
---   print fileData
---   c'unloadDroppedFiles filePtr
 
 $(raylibApplication 'initApp 'mainLoop 'shouldClose 'teardown)
