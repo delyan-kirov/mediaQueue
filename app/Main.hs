@@ -25,7 +25,7 @@ import Raylib.Core (
   loadDroppedFiles,
   setExitKey,
   setTargetFPS,
-  windowShouldClose,
+  windowShouldClose, waitTime,
  )
 import Raylib.Core.Text (drawText)
 import Raylib.Core.Textures (drawTexturePro, drawTextureRec, loadTexture)
@@ -34,16 +34,19 @@ import Raylib.Types (
   KeyboardKey (KeyA, KeyD, KeyDown, KeyEnter, KeyLeft, KeyNull, KeyRight, KeyS, KeySpace, KeyT, KeyUp, KeyW, KeyX),
   Rectangle (Rectangle, rectangle'height, rectangle'width, rectangle'x, rectangle'y),
   Texture (Texture),
-  Vector2 (Vector2, vector2'x, vector2'y),
+  Vector2 (Vector2, vector2'x, vector2'y), FilePathList (filePathList'paths),
  )
 import Raylib.Util (WindowResources, raylibApplication, whileWindowOpen, whileWindowOpen_)
 import Raylib.Util.Colors qualified as Colors
 import System.Exit (exitSuccess)
 
 import Audio (scanAudio)
-import Foreign (Storable (peek))
+import Raylib.Core.Audio (initAudioDevice, isAudioDeviceReady, loadSound, playSound)
 
 default (Int)
+
+whenIO :: IO Bool -> IO () -> IO ()
+whenIO condition action = do condition' <- condition; when condition' action
 
 class Cycle a where
   nextCycle :: a -> a
@@ -103,6 +106,7 @@ initApp :: IO AppState
 initApp = do
   w <- initWindow 1200 800 "Pokiclone"
   setTargetFPS 60
+  initAudioDevice
   setExitKey KeyNull
   backGroundTexture <- loadTexture "./resources/backGround1.png" w
   return $ defaultState w backGroundTexture
@@ -244,17 +248,18 @@ gameLoopModeMenu appState = do
 
 mainLoop :: AppState -> IO AppState
 mainLoop appState = do
-  fileIsDropped <- isFileDropped
-  when fileIsDropped $ do
-    filePtr <- loadDroppedFiles
-    print filePtr
-    beginDrawing
 
   appState' <- switchMode appState
   appState'' <- case appState'.mode of
     GameModeOne -> gameLoopModeOne appState'
     GameModeTwo -> gameLoopModeTwo appState'
     GameModeThree -> gameLoopModeMenu appState'
+
+  whenIO isFileDropped $ do
+    filePtr <- loadDroppedFiles
+    song <- loadSound (head filePtr.filePathList'paths) appState.window
+    playSound song
+    print $ head filePtr.filePathList'paths
 
   endDrawing
   return appState''
