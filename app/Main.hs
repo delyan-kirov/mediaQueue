@@ -1,9 +1,12 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE MonadComprehensions #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TemplateHaskell #-}
-
 {-# OPTIONS -Wall #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Redundant bracket" #-}
 
 module Main where
 
@@ -11,8 +14,6 @@ import Control.Lens (makeLenses, makeLensesFor)
 import Control.Monad (when)
 import Raylib.Core (
   beginDrawing,
-  c'loadDroppedFiles,
-  c'unloadDroppedFiles,
   clearBackground,
   closeWindow,
   endDrawing,
@@ -25,16 +26,17 @@ import Raylib.Core (
   loadDroppedFiles,
   setExitKey,
   setTargetFPS,
-  windowShouldClose, waitTime,
+  windowShouldClose,
  )
 import Raylib.Core.Text (drawText)
 import Raylib.Core.Textures (drawTexturePro, drawTextureRec, loadTexture)
 import Raylib.Types (
   Color (Color),
+  FilePathList (filePathList'paths),
   KeyboardKey (KeyA, KeyD, KeyDown, KeyEnter, KeyLeft, KeyNull, KeyRight, KeyS, KeySpace, KeyT, KeyUp, KeyW, KeyX),
   Rectangle (Rectangle, rectangle'height, rectangle'width, rectangle'x, rectangle'y),
   Texture (Texture),
-  Vector2 (Vector2, vector2'x, vector2'y), FilePathList (filePathList'paths),
+  Vector2 (Vector2, vector2'x, vector2'y),
  )
 import Raylib.Util (WindowResources, raylibApplication, whileWindowOpen, whileWindowOpen_)
 import Raylib.Util.Colors qualified as Colors
@@ -63,19 +65,19 @@ makeLensesFor
   ]
   ''Rectangle
 
-data GameMode = GameModeOne | GameModeTwo | GameModeThree
+data AppMode = AppModeOne | AppModeMenu | AppModeMediaControl
 
-instance Cycle GameMode where
-  nextCycle gameMode = case gameMode of
-    GameModeOne -> GameModeTwo
-    GameModeTwo -> GameModeThree
-    GameModeThree -> GameModeOne
+instance Cycle AppMode where
+  nextCycle appMode = case appMode of
+    AppModeOne -> AppModeMenu
+    AppModeMenu -> AppModeMediaControl
+    AppModeMediaControl -> AppModeOne
 
   previousCycle = nextCycle . nextCycle
 
-data GameMenu = Volume | Brightness | Quit deriving (Show, Eq)
-instance Cycle GameMenu where
-  nextCycle gameMenu = case gameMenu of
+data AppMenu = Volume | Brightness | Quit deriving (Show, Eq)
+instance Cycle AppMenu where
+  nextCycle appMenu = case appMenu of
     Volume -> Brightness
     Brightness -> Quit
     Quit -> Volume
@@ -83,18 +85,18 @@ instance Cycle GameMenu where
   previousCycle = nextCycle . nextCycle
 
 data AppState = AppState
-  { mode :: GameMode
+  { mode :: AppMode
   , entity :: Vector2
   , txtPrompt :: Int
   , backGround :: Texture
-  , menu :: GameMenu
+  , menu :: AppMenu
   , window :: WindowResources
   }
 
 defaultState :: WindowResources -> Texture -> AppState
 defaultState w backGroundTexture =
   AppState
-    { mode = GameModeOne
+    { mode = AppModeOne
     , entity = Vector2 0.0 0.0
     , txtPrompt = 0
     , backGround = backGroundTexture
@@ -108,40 +110,11 @@ initApp = do
   setTargetFPS 60
   initAudioDevice
   setExitKey KeyNull
-  backGroundTexture <- loadTexture "./resources/backGround1.png" w
+  backGroundTexture <- loadTexture "./resources/backGround.png" w
   return $ defaultState w backGroundTexture
 
-moveDirection :: Vector2 -> IO Vector2
-moveDirection direction = do
-  goLeft <- (||) <$> isKeyDown KeyA <*> isKeyDown KeyLeft
-  goRight <- (||) <$> isKeyDown KeyD <*> isKeyDown KeyRight
-  goDown <- (||) <$> isKeyDown KeyS <*> isKeyDown KeyDown
-  goUp <- (||) <$> isKeyDown KeyW <*> isKeyDown KeyUp
-  screenWidth <- getScreenWidth
-  screenHeight <- getScreenHeight
-  let moveAmount = 8.0
-      boundaryThreshold = 100.0
-  let newX =
-        if
-          | goLeft && direction.vector2'x - moveAmount > 0 ->
-              direction.vector2'x - moveAmount
-          | goRight && direction.vector2'x + moveAmount < fromIntegral screenWidth - boundaryThreshold ->
-              direction.vector2'x + moveAmount
-          | otherwise -> direction.vector2'x
-      newY =
-        if
-          | goUp && direction.vector2'y - moveAmount > 0 ->
-              direction.vector2'y - moveAmount
-          | goDown && direction.vector2'y + moveAmount < fromIntegral screenHeight - boundaryThreshold ->
-              direction.vector2'y + moveAmount
-          | otherwise -> direction.vector2'y
-      newPosition = direction{vector2'x = newX, vector2'y = newY}
-  if newX /= direction.vector2'x || newY /= direction.vector2'y
-    then return newPosition
-    else return direction
-
-gameLoopModeOne :: AppState -> IO AppState
-gameLoopModeOne appState = do
+appModeOne :: AppState -> IO AppState
+appModeOne appState = do
   clearBackground $ Color 1 20 40 1
   appState' <- refreshTextArea appState
   drawText "POG" 50 50 40 Colors.rayWhite
@@ -187,44 +160,9 @@ gameLoopModeOne appState = do
     , "Made with the superpower of raylib and haskell"
     ]
 
-gameLoopModeTwo :: AppState -> IO AppState
-gameLoopModeTwo appState = do
-  -- update position
-  newPosition <- moveDirection appState.entity
-  -- draw
+appModeMenu :: AppState -> IO AppState
+appModeMenu appState = do
   clearBackground $ Color 1 20 40 1
-  drawTextureRec
-    appState.backGround
-    Rectangle{rectangle'x = 0.0, rectangle'y = 0.0, rectangle'width = 100.0, rectangle'height = 100.0}
-    Vector2{vector2'x = newPosition.vector2'x, vector2'y = newPosition.vector2'y}
-    Colors.pink
-  return $ appState{entity = newPosition}
-
-gameLoopModeMenu :: AppState -> IO AppState
-gameLoopModeMenu appState = do
-  clearBackground $ Color 100 100 200 0
-  screenWidth <- (+ 10) <$> getScreenWidth
-  screenHeight <- (+ 10) <$> getScreenHeight
-  drawTexturePro
-    appState.backGround
-    Rectangle
-      { rectangle'x = 0.0
-      , rectangle'y = 0.0
-      , rectangle'width = 600.0
-      , rectangle'height = 600.0
-      }
-    Rectangle
-      { rectangle'x = 0.0
-      , rectangle'y = 0.0
-      , rectangle'width = fromIntegral screenWidth
-      , rectangle'height = fromIntegral screenHeight
-      }
-    Vector2
-      { vector2'x = 2.3
-      , vector2'y = 2.3
-      }
-    0.1
-    Colors.rayWhite
   drawText (show Quit) 50 (100 + 45) 30 Colors.rayWhite
   drawText (show Volume) 50 (100 + 45 * 2) 30 Colors.rayWhite
   drawText (show Brightness) 50 (100 + 45 * 3) 30 Colors.rayWhite
@@ -237,8 +175,7 @@ gameLoopModeMenu appState = do
         | shouldMoveDown -> appState{menu = nextCycle appState.menu}
         | shouldMoveUp -> appState{menu = previousCycle appState.menu}
         | otherwise -> appState
-  makeAction <- isKeyPressed KeyEnter
-  when (appState'.menu == Quit && makeAction) $
+  whenIO ((&& appState'.menu == Quit) <$> isKeyPressed KeyEnter) $
     closeWindow appState'.window
       >> exitSuccess
   case appState'.menu of
@@ -246,20 +183,25 @@ gameLoopModeMenu appState = do
     Volume -> drawText (show Volume) 50 (100 + 45 * 2) 30 Colors.red >> return appState'
     Brightness -> drawText (show Brightness) 50 (100 + 45 * 3) 30 Colors.red >> return appState'
 
+appModeMediaControl :: AppState -> IO AppState
+appModeMediaControl appState = do
+  clearBackground $ Color 10 60 90 10
+  drawText "Media Control Panel" 50 50 40 Colors.rayWhite
+  return appState
+
 mainLoop :: AppState -> IO AppState
 mainLoop appState = do
-
   appState' <- switchMode appState
   appState'' <- case appState'.mode of
-    GameModeOne -> gameLoopModeOne appState'
-    GameModeTwo -> gameLoopModeTwo appState'
-    GameModeThree -> gameLoopModeMenu appState'
+    AppModeOne -> appModeOne appState'
+    AppModeMenu -> appModeMenu appState'
+    AppModeMediaControl -> appModeMediaControl appState'
 
   whenIO isFileDropped $ do
     filePtr <- loadDroppedFiles
     song <- loadSound (head filePtr.filePathList'paths) appState.window
     playSound song
-    print $ head filePtr.filePathList'paths
+    print $ "[INFO]" ++ head filePtr.filePathList'paths
 
   endDrawing
   return appState''
