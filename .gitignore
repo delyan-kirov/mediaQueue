@@ -1,2 +1,5 @@
 dist-newstyle/
 ./audio/test1
+*.jpg
+*.png
+*.so
