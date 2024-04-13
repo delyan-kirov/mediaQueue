@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MonadComprehensions #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
@@ -26,7 +27,7 @@ import Raylib.Core (
   loadDroppedFiles,
   setExitKey,
   setTargetFPS,
-  windowShouldClose,
+  windowShouldClose, c'loadDroppedFiles, c'unloadDroppedFiles,
  )
 import Raylib.Core.Text (drawText)
 import Raylib.Core.Textures (drawTexturePro, drawTextureRec, loadTexture)
@@ -44,6 +45,7 @@ import System.Exit (exitSuccess)
 
 import Audio (scanAudio)
 import Raylib.Core.Audio (initAudioDevice, isAudioDeviceReady, loadSound, playSound)
+import Foreign (Storable(peek))
 
 default (Int)
 
@@ -65,7 +67,7 @@ makeLensesFor
   ]
   ''Rectangle
 
-data AppMode = AppModeOne | AppModeMenu | AppModeMediaControl
+data AppMode = AppModeOne | AppModeMenu | AppModeMediaControl deriving(Eq)
 
 instance Cycle AppMode where
   nextCycle appMode = case appMode of
@@ -86,8 +88,8 @@ instance Cycle AppMenu where
 
 data AppState = AppState
   { mode :: AppMode
-  , entity :: Vector2
   , txtPrompt :: Int
+  , mediaFiles :: [String]
   , backGround :: Texture
   , menu :: AppMenu
   , window :: WindowResources
@@ -97,8 +99,8 @@ defaultState :: WindowResources -> Texture -> AppState
 defaultState w backGroundTexture =
   AppState
     { mode = AppModeOne
-    , entity = Vector2 0.0 0.0
     , txtPrompt = 0
+    , mediaFiles = []
     , backGround = backGroundTexture
     , menu = Quit
     , window = w
@@ -185,9 +187,18 @@ appModeMenu appState = do
 
 appModeMediaControl :: AppState -> IO AppState
 appModeMediaControl appState = do
-  clearBackground $ Color 10 60 90 10
+  clearBackground (Color 10 60 90 10)
   drawText "Media Control Panel" 50 50 40 Colors.rayWhite
-  return appState
+  drawText (show appState.mediaFiles) 50 (100 + 45) 40 Colors.rayWhite
+  isFileDropped >>= \case
+    True -> do
+      filePtr <- c'loadDroppedFiles
+      fileContent <- peek filePtr
+      c'unloadDroppedFiles filePtr
+      song <- loadSound (head (fileContent.filePathList'paths)) (appState.window)
+      playSound song
+      return appState{mediaFiles = mediaFiles appState ++ [show fileContent.filePathList'paths]}
+    False -> return appState 
 
 mainLoop :: AppState -> IO AppState
 mainLoop appState = do
@@ -196,13 +207,6 @@ mainLoop appState = do
     AppModeOne -> appModeOne appState'
     AppModeMenu -> appModeMenu appState'
     AppModeMediaControl -> appModeMediaControl appState'
-
-  whenIO isFileDropped $ do
-    filePtr <- loadDroppedFiles
-    song <- loadSound (head filePtr.filePathList'paths) appState.window
-    playSound song
-    print $ "[INFO]" ++ head filePtr.filePathList'paths
-
   endDrawing
   return appState''
  where
@@ -220,3 +224,8 @@ teardown :: AppState -> IO ()
 teardown s = closeWindow (window s)
 
 $(raylibApplication 'initApp 'mainLoop 'shouldClose 'teardown)
+
+{-- 
+ - Create a function to display a list on screen
+ - Create a function to play music consecutively
+ --}
