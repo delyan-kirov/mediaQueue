@@ -97,6 +97,8 @@ executable pokiclone
                  , h-raylib >= 5.1.2.0
                  , pokiclone
                  , lens
+                 , mtl
+                 , transformers
 
     -- Directories containing source files.
     hs-source-dirs:   app

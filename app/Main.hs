@@ -4,48 +4,45 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# OPTIONS -Wall #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
-{-# HLINT ignore "Redundant bracket" #-}
+{-# OPTIONS -Wall #-}
 
 module Main where
 
-import Control.Lens (makeLenses, makeLensesFor)
-import Control.Monad (when)
+import Control.Lens (makeLenses, (%~), (&))
+import Control.Monad (forM_, guard, unless, when)
+import Control.Monad.Trans (lift)
+import Control.Monad.Trans.Maybe (MaybeT, runMaybeT)
 import Raylib.Core (
   beginDrawing,
+  c'loadDroppedFiles,
+  c'unloadDroppedFiles,
   clearBackground,
   closeWindow,
   endDrawing,
-  getScreenHeight,
-  getScreenWidth,
   initWindow,
   isFileDropped,
   isKeyDown,
   isKeyPressed,
-  loadDroppedFiles,
   setExitKey,
   setTargetFPS,
-  windowShouldClose, c'loadDroppedFiles, c'unloadDroppedFiles,
+  windowShouldClose,
  )
 import Raylib.Core.Text (drawText)
-import Raylib.Core.Textures (drawTexturePro, drawTextureRec, loadTexture)
 import Raylib.Types (
   Color (Color),
   FilePathList (filePathList'paths),
-  KeyboardKey (KeyA, KeyD, KeyDown, KeyEnter, KeyLeft, KeyNull, KeyRight, KeyS, KeySpace, KeyT, KeyUp, KeyW, KeyX),
-  Rectangle (Rectangle, rectangle'height, rectangle'width, rectangle'x, rectangle'y),
-  Texture (Texture),
-  Vector2 (Vector2, vector2'x, vector2'y),
+  KeyboardKey (KeyA, KeyDown, KeyEnter, KeyLeft, KeyNull, KeyRight, KeySpace, KeyUp),
+  Music,
  )
-import Raylib.Util (WindowResources, raylibApplication, whileWindowOpen, whileWindowOpen_)
+import Raylib.Util (WindowResources, raylibApplication)
 import Raylib.Util.Colors qualified as Colors
 import System.Exit (exitSuccess)
 
-import Audio (scanAudio)
-import Raylib.Core.Audio (initAudioDevice, isAudioDeviceReady, loadSound, playSound)
-import Foreign (Storable(peek))
+import Audio qualified (scanAudio)
+import Control.Monad.Reader (MonadReader (ask), ReaderT (ReaderT, runReaderT), withReaderT)
+import Foreign (Storable (peek))
+import Raylib.Core.Audio (getMasterVolume, getMusicTimeLength, initAudioDevice, isMusicReady, loadMusicStream, loadSound, playMusicStream, playSound, setMasterVolume, updateMusicStream)
 
 default (Int)
 
@@ -58,16 +55,7 @@ class Cycle a where
 
 --
 
-$(makeLenses ''Rectangle)
-makeLensesFor
-  [ ("rectangleX", "_rectangleX")
-  , ("rectangleY", "_rectangleY")
-  , ("rectangleHeight", "_rectangleHeight")
-  , ("rectangleWidth", "_rectangleWidth")
-  ]
-  ''Rectangle
-
-data AppMode = AppModeOne | AppModeMenu | AppModeMediaControl deriving(Eq)
+data AppMode = AppModeOne | AppModeMenu | AppModeMediaControl deriving (Eq)
 
 instance Cycle AppMode where
   nextCycle appMode = case appMode of
@@ -87,23 +75,23 @@ instance Cycle AppMenu where
   previousCycle = nextCycle . nextCycle
 
 data AppState = AppState
-  { mode :: AppMode
-  , txtPrompt :: Int
-  , mediaFiles :: [String]
-  , backGround :: Texture
-  , menu :: AppMenu
-  , window :: WindowResources
+  { _mode :: AppMode
+  , _mediaFiles :: [Music]
+  , _menu :: AppMenu
+  , _window :: WindowResources
+  , _counter :: Int
   }
 
-defaultState :: WindowResources -> Texture -> AppState
-defaultState w backGroundTexture =
+makeLenses ''AppState
+
+defaultState :: WindowResources -> AppState
+defaultState w =
   AppState
-    { mode = AppModeOne
-    , txtPrompt = 0
-    , mediaFiles = []
-    , backGround = backGroundTexture
-    , menu = Quit
-    , window = w
+    { _mode = AppModeOne
+    , _mediaFiles = []
+    , _menu = Quit
+    , _window = w
+    , _counter = 0
     }
 
 initApp :: IO AppState
@@ -111,121 +99,158 @@ initApp = do
   w <- initWindow 1200 800 "Pokiclone"
   setTargetFPS 60
   initAudioDevice
+  song <- loadMusicStream "/home/dk/Music/17 - Maglietta e Jeans.mp3" w
+  playMusicStream song
   setExitKey KeyNull
-  backGroundTexture <- loadTexture "./resources/backGround.png" w
-  return $ defaultState w backGroundTexture
+  return $ defaultState w
 
-appModeOne :: AppState -> IO AppState
-appModeOne appState = do
-  clearBackground $ Color 1 20 40 1
-  appState' <- refreshTextArea appState
-  drawText "POG" 50 50 40 Colors.rayWhite
-  appState'' <- readPrompt appState'
-  drawTxtFromPrompt appState''.txtPrompt Colors.black prompt
-  return appState''
+type AppStateIO = ReaderT AppState IO AppState
+
+data TextF = TextF
+  { txtString :: String -- The text content
+  , xAxis :: Int -- Position on the x-axis
+  , yAxis :: Int -- Position on the y-axis
+  , size :: Int -- Font size
+  , color :: Color -- Text color
+  }
+
+drawTextF :: TextF -> IO ()
+drawTextF textf =
+  drawText textf.txtString textf.xAxis textf.yAxis textf.size textf.color
+
+drawTxtFromPrompt :: Color -> [String] -> IO ()
+drawTxtFromPrompt color text =
+  let n = length text
+   in when (n /= 0) $
+        [0 .. n - 1] `forM_` \i ->
+          drawTextF
+            TextF
+              { txtString = text !! i
+              , xAxis = 50
+              , yAxis = 100 + 45 * i
+              , size = 30
+              , color = color
+              }
+
+appModeOne :: AppStateIO
+appModeOne = do
+  lift $ do
+    clearBackground (Color 1 20 40 1)
+    drawText "POG" 50 50 40 Colors.rayWhite
+  readPrompt
  where
-  refreshTextArea :: AppState -> IO AppState
-  refreshTextArea appState = do
-    shouldRefresh <- isKeyPressed KeyT
-    if shouldRefresh
-      then return appState{txtPrompt = 0}
-      else return appState
+  readPrompt :: AppStateIO
+  readPrompt = do
+    appState <- ask
+    lift $ do
+      x <- Audio.scanAudio
+      drawTxtFromPrompt
+        Colors.rayWhite
+        (concat x)
+    return appState
 
-  readPrompt :: AppState -> IO AppState
-  readPrompt appState = do
-    (\x -> drawTxtFromPrompt (length $ concat x) Colors.rayWhite (concat x)) =<< scanAudio
-    let existMorePrompts = length prompt >= appState.txtPrompt + 1
-    shouldGoNext <- isKeyPressed KeyA
-    if shouldGoNext && existMorePrompts
-      then return $ appState{txtPrompt = appState.txtPrompt + 1}
-      else return appState
+appModeMenu :: AppStateIO
+appModeMenu = do
+  lift $ do
+    clearBackground $ Color 1 20 40 1
+    drawTxtFromPrompt Colors.rayWhite (show <$> [Quit, Volume, Brightness])
 
-  drawTxtFromPrompt :: Int -> Color -> [String] -> IO ()
-  drawTxtFromPrompt n color txt =
-    when (n /= 0) $
-      mapM_
-        ( \i ->
-            drawText
-              (txt !! i)
-              50 -- x-axis
-              (100 + 45 * i) -- y-axis
-              24 -- size
-              color
-        )
-        [0 .. n - 1]
+  shouldMoveDown <- lift $ isKeyPressed KeyDown
+  shouldMoveUp <- lift $ isKeyPressed KeyUp
+  appState <- ask
+  let appState'
+        | shouldMoveDown = appState & menu %~ nextCycle
+        | shouldMoveUp = appState & menu %~ previousCycle
+        | otherwise = appState
+  shouldLowerVolume <- lift $ (&& (appState'._menu == Volume)) <$> isKeyDown KeyLeft
+  shouldIncreaseVolume <- lift $ (&& (appState'._menu == Volume)) <$> isKeyDown KeyRight
+  if
+    | shouldLowerVolume -> changeVolume (\x -> x - (0.1 * x)) >> return appState'
+    | shouldIncreaseVolume -> changeVolume (\x -> x + (0.1 * x)) >> return appState'
+    | otherwise -> displayMenu appState'
+ where
+  changeVolume update = lift $ do
+    masterVolume <- getMasterVolume
+    let newVolume = update masterVolume
+    when (newVolume < 0.999 && newVolume > 0.001) $ setMasterVolume newVolume
 
-  prompt :: [String]
-  prompt =
-    [ "hello"
-    , "Get ready to follow this wonderful adventure with me!"
-    , "See this cool GUI"
-    , "Made with the superpower of raylib and haskell"
-    ]
+  displayMenu appState = do
+    let menuPosition = case appState._menu of
+          Quit -> 0
+          Volume -> 1
+          Brightness -> 2
+    lift $
+      drawTextF
+        TextF
+          { txtString = show appState._menu
+          , xAxis = 50
+          , yAxis = 100 + 45 * menuPosition
+          , size = 30
+          , color = Colors.red
+          }
+        >> return appState
 
-appModeMenu :: AppState -> IO AppState
-appModeMenu appState = do
-  clearBackground $ Color 1 20 40 1
-  drawText (show Quit) 50 (100 + 45) 30 Colors.rayWhite
-  drawText (show Volume) 50 (100 + 45 * 2) 30 Colors.rayWhite
-  drawText (show Brightness) 50 (100 + 45 * 3) 30 Colors.rayWhite
-
-  shouldMoveDown <- isKeyPressed KeyDown
-  shouldMoveUp <- isKeyPressed KeyUp
-  let
-    appState' =
-      if
-        | shouldMoveDown -> appState{menu = nextCycle appState.menu}
-        | shouldMoveUp -> appState{menu = previousCycle appState.menu}
-        | otherwise -> appState
-  whenIO ((&& appState'.menu == Quit) <$> isKeyPressed KeyEnter) $
-    closeWindow appState'.window
-      >> exitSuccess
-  case appState'.menu of
-    Quit -> drawText (show Quit) 50 (100 + 45) 30 Colors.red >> return appState'
-    Volume -> drawText (show Volume) 50 (100 + 45 * 2) 30 Colors.red >> return appState'
-    Brightness -> drawText (show Brightness) 50 (100 + 45 * 3) 30 Colors.red >> return appState'
-
-appModeMediaControl :: AppState -> IO AppState
-appModeMediaControl appState = do
-  clearBackground (Color 10 60 90 10)
-  drawText "Media Control Panel" 50 50 40 Colors.rayWhite
-  drawText (show appState.mediaFiles) 50 (100 + 45) 40 Colors.rayWhite
-  isFileDropped >>= \case
-    True -> do
-      filePtr <- c'loadDroppedFiles
-      fileContent <- peek filePtr
-      c'unloadDroppedFiles filePtr
-      song <- loadSound (head (fileContent.filePathList'paths)) (appState.window)
-      playSound song
-      return appState{mediaFiles = mediaFiles appState ++ [show fileContent.filePathList'paths]}
-    False -> return appState 
+appModeMediaControl :: AppStateIO
+appModeMediaControl = do
+  maybeUpdatedState <- runMaybeT $ do
+    appState <- lift ask
+    lift2 $ do
+      clearBackground (Color 10 60 90 10)
+      drawText "Media Control Panel" 50 50 40 Colors.rayWhite
+      drawText (show $ _mediaFiles appState) 50 (100 + 45) 40 Colors.rayWhite
+    fileDropped <- lift2 isFileDropped
+    guard fileDropped
+    filePtr <- lift2 c'loadDroppedFiles
+    fileContent <- lift2 $ peek filePtr
+    lift2 $ c'unloadDroppedFiles filePtr
+    song <- lift2 $ loadMusicStream (head fileContent.filePathList'paths) appState._window
+    lift2 $ do
+      playMusicStream song
+      print song
+      print =<< getMusicTimeLength song
+    return $ appState & mediaFiles %~ (++ [song])
+  maybe ask return maybeUpdatedState
+ where
+  lift2 = lift . lift
 
 mainLoop :: AppState -> IO AppState
 mainLoop appState = do
-  appState' <- switchMode appState
-  appState'' <- case appState'.mode of
-    AppModeOne -> appModeOne appState'
-    AppModeMenu -> appModeMenu appState'
-    AppModeMediaControl -> appModeMediaControl appState'
+  beginDrawing
+  unless (null appState._mediaFiles) $ do updateMusicStream $ head appState._mediaFiles
+  appState' <- runReaderT loop appState
   endDrawing
-  return appState''
+  print appState'._counter
+  if appState'._counter > 10 ^ 3
+    then do
+      return $ (appState' & counter %~ const 0) & mediaFiles %~ pop
+    else return $ appState' & counter %~ (+ 1)
  where
-  switchMode :: AppState -> IO AppState
-  switchMode appState = do
-    shouldGoNext <- isKeyPressed KeySpace
+  pop x = case x of _ : xs -> xs; [] -> []
+  loop :: AppStateIO = do
+    appState' <- switchMode
+    withReaderT (const appState') $ case appState._mode of
+      AppModeOne -> appModeOne
+      AppModeMenu -> appModeMenu
+      AppModeMediaControl -> appModeMediaControl
+  switchMode :: AppStateIO
+  switchMode = do
+    shouldGoNext <- lift $ isKeyPressed KeySpace
     if shouldGoNext
-      then return (appState{mode = nextCycle appState.mode})
+      then return $ appState & mode %~ nextCycle
       else return appState
 
 shouldClose :: AppState -> IO Bool
-shouldClose = const windowShouldClose
+shouldClose appState = do
+  pressedEnter <- isKeyPressed KeyEnter
+  closeEarly <- windowShouldClose
+  return $ (appState._menu == Quit && pressedEnter) || closeEarly
 
 teardown :: AppState -> IO ()
-teardown s = closeWindow (window s)
+teardown appState = closeWindow appState._window
 
 $(raylibApplication 'initApp 'mainLoop 'shouldClose 'teardown)
 
-{-- 
+{--
  - Create a function to display a list on screen
  - Create a function to play music consecutively
  --}
