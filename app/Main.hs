@@ -22,6 +22,8 @@ import Raylib.Core (
   clearBackground,
   closeWindow,
   endDrawing,
+  getScreenHeight,
+  getScreenWidth,
   initWindow,
   isFileDropped,
   isKeyDown,
@@ -31,12 +33,14 @@ import Raylib.Core (
   setTargetFPS,
   windowShouldClose,
  )
-import Raylib.Core.Text (drawText)
+import Raylib.Core.Text (drawText, drawTextEx, getFontDefault)
 import Raylib.Types (
   Color (Color),
   FilePathList (FilePathList, filePathList'paths),
   KeyboardKey (KeyDown, KeyEnter, KeyGrave, KeyLeft, KeyNull, KeyRight, KeySpace, KeyUp),
+  Music,
   Sound (sound'frameCount),
+  Vector2 (Vector2),
  )
 import Raylib.Util (WindowResources, raylibApplication)
 import Raylib.Util.Colors qualified as Colors
@@ -46,8 +50,8 @@ import Control.Exception (try)
 import Control.Monad.Reader (MonadReader (ask), ReaderT (runReaderT), withReaderT)
 import Data.List (isPrefixOf, isSuffixOf, partition, tails)
 import Foreign (Storable (peek))
-import Raylib.Core.Audio (getMasterVolume, initAudioDevice, loadMusicStream, loadSound, pauseSound, playMusicStream, playSound, resumeSound, setMasterVolume, stopSound)
-import System.Exit (exitWith, exitFailure)
+import Raylib.Core.Audio (getMasterVolume, getMusicTimeLength, initAudioDevice, loadMusicStream, loadSound, pauseMusicStream, pauseSound, playMusicStream, playSound, resumeMusicStream, resumeSound, seekMusicStream, setMasterVolume, stopSound, updateMusicStream)
+import System.Exit (exitFailure, exitWith)
 
 default (Int)
 
@@ -63,7 +67,7 @@ class Cycle a where
 data AppMode = AppModeOne | AppModeMenu | AppModeMediaControl deriving (Eq)
 
 data Song = Song
-  { media :: Sound
+  { media :: Music
   , title :: String
   , duration :: Integer
   }
@@ -122,29 +126,42 @@ type AppStateIO = ReaderT AppState IO AppState
 
 data TextF = TextF
   { txtString :: String -- The text content
-  , xAxis :: Int -- Position on the x-axis
-  , yAxis :: Int -- Position on the y-axis
-  , size :: Int -- Font size
+  , xAxis :: Float -- Position on the x-axis
+  , yAxis :: Float -- Position on the y-axis
+  , size :: Float -- Font size
   , color :: Color -- Text color
   }
 
 drawTextF :: TextF -> IO ()
-drawTextF textf =
-  drawText textf.txtString textf.xAxis textf.yAxis textf.size textf.color
+drawTextF textf = do
+  -- void DrawTextEx(Font font, const char *text, Vector2 position, float fontSize, float spacing, Color tint); // Draw text using font and additional parameters
+  defaultFont <- getFontDefault
+  screenWidth <- getScreenWidth
+  screenHeight <- getScreenHeight
+  drawTextEx
+    defaultFont
+    textf.txtString
+    ( Vector2
+        (textf.xAxis * (0.001 * fromIntegral screenWidth))
+        (textf.yAxis + (0.1 * fromIntegral screenHeight))
+    )
+    (textf.size * 0.2 + 0.01 * fromIntegral (screenWidth + screenHeight))
+    2.0
+    textf.color
 
 drawTxtFromPrompt :: Color -> [String] -> IO ()
-drawTxtFromPrompt color text =
+drawTxtFromPrompt color text = do
   let n = length text
-   in when (n /= 0) $
-        [0 .. n - 1] `forM_` \i ->
-          drawTextF
-            TextF
-              { txtString = text !! i
-              , xAxis = 50
-              , yAxis = 100 + 45 * i
-              , size = 30
-              , color = color
-              }
+  when (n /= 0) $
+    [0 .. n - 1] `forM_` \i ->
+      drawTextF
+        TextF
+          { txtString = text !! i
+          , xAxis = 50.0
+          , yAxis = 100.0 + 45.0 * fromIntegral i
+          , size = 30.0
+          , color = color
+          }
 
 appModeOne :: AppStateIO
 appModeOne = do
@@ -195,14 +212,10 @@ appModeMenu = do
           Volume -> 1
           Brightness -> 2
      in lift $
-          drawTextF
-            TextF
-              { txtString = show appState._menu
-              , xAxis = 50
-              , yAxis = 100 + 45 * menuPosition
-              , size = 30
-              , color = Colors.red
-              }
+          case appState._menu of
+            Quit -> drawTxtFromPrompt Colors.red [show Quit, "", ""]
+            Volume -> drawTxtFromPrompt Colors.red ["", show Volume, ""]
+            Brightness -> drawTxtFromPrompt Colors.red ["", "", show Brightness]
 
 appModeMediaControl :: AppStateIO
 appModeMediaControl = do
@@ -221,15 +234,17 @@ appModeMediaControl = do
     songs <-
       files.filePathList'paths
         `forM` \song ->
-          lift2 $ loadSound song appState._window
-    let songConfigs =
-            (songs `zip` [0 ..])
-              `for` \(song, i) ->
-                Song
-                  { media = song
-                  , duration = song.sound'frameCount
-                  , title = formatTitle $ files.filePathList'paths !! i
-                  }
+          lift2 $ loadMusicStream song appState._window
+    songConfigs <-
+      (songs `zip` [0 ..])
+        `forM` \(song, i) -> do
+          musicDuration <- lift2 $ getMusicTimeLength song
+          return
+            Song
+              { media = song
+              , duration = floor musicDuration
+              , title = formatTitle $ files.filePathList'paths !! i
+              }
     lift2 $ do
       putStrLn "INFO: Loading files:" >> print `mapM_` (title <$> songConfigs)
       return $ appState & mediaFiles %~ (++ songConfigs)
@@ -255,6 +270,8 @@ mainLoop appState = do
   beginDrawing
   appState' <- runReaderT loop appState
   appState'' <- runReaderT appControlAudio appState'
+  let currentSongs = appState''._mediaFiles
+  unless (null currentSongs) $ updateMusicStream (head currentSongs).media
   endDrawing
   runReaderT playMusic appState''
  where
@@ -266,10 +283,10 @@ mainLoop appState = do
       lift2 $
         if
           | not appState._shouldPlay -> return appState
-          | appState._counter > (head appState._mediaFiles).duration `div` 800 -> do
+          | appState._counter > (head appState._mediaFiles).duration * 60 -> do
               return $ (appState & counter %~ const 0) & mediaFiles %~ pop
           | appState._counter == 0 -> do
-              playSound (head appState._mediaFiles).media
+              playMusicStream (head appState._mediaFiles).media
               return $ appState & counter %~ (+ 1)
           | otherwise -> return $ appState & counter %~ (+ 1)
     maybe ask return appState
@@ -283,16 +300,21 @@ mainLoop appState = do
 
   appControlAudio :: AppStateIO = do
     shouldCycleAudio <- lift $ isKeyPressed KeySpace
+    shouldSeekAhead <- lift $ isKeyPressed KeyRight
+    shouldSeekBack <- lift $ isKeyPressed KeyLeft
     appState <- ask
     let currentMediaFiles = appState._mediaFiles
     if
       | shouldCycleAudio && appState._shouldPlay && not (null currentMediaFiles) -> do
-          lift $ pauseSound (head appState._mediaFiles).media
+          lift $ pauseMusicStream (head currentMediaFiles).media
           return $ appState & shouldPlay %~ not
       | shouldCycleAudio && not appState._shouldPlay && not (null currentMediaFiles) -> do
-          lift $ resumeSound (head appState._mediaFiles).media
+          lift $ resumeMusicStream (head currentMediaFiles).media
           return $ appState & shouldPlay %~ not
       | shouldCycleAudio -> return $ appState & shouldPlay %~ not
+      | shouldSeekAhead && appState._mode == AppModeMediaControl && not (null currentMediaFiles) -> do
+          lift (seekMusicStream (head currentMediaFiles).media 10.0)
+          return appState
       | otherwise -> return appState
 
   switchMode :: AppStateIO
@@ -316,6 +338,4 @@ teardown appState = closeWindow appState._window
 $(raylibApplication 'initApp 'mainLoop 'shouldClose 'teardown)
 
 {--
- - Create a function to display a list on screen
- - Create a function to play music consecutively
  --}
