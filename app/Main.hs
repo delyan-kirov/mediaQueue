@@ -11,9 +11,10 @@
 module Main where
 
 import Control.Lens (makeLenses, (%~), (&))
-import Control.Monad (forM_, guard, unless, when)
+import Control.Monad (forM, forM_, guard, unless, when)
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Maybe (MaybeT, runMaybeT)
+import Data.Semigroup
 import Raylib.Core (
   beginDrawing,
   c'loadDroppedFiles,
@@ -25,6 +26,7 @@ import Raylib.Core (
   isFileDropped,
   isKeyDown,
   isKeyPressed,
+  loadDroppedFiles,
   setExitKey,
   setTargetFPS,
   windowShouldClose,
@@ -32,19 +34,20 @@ import Raylib.Core (
 import Raylib.Core.Text (drawText)
 import Raylib.Types (
   Color (Color),
-  FilePathList (filePathList'paths),
-  KeyboardKey (KeyA, KeyDown, KeyEnter, KeyLeft, KeyNull, KeyRight, KeySpace, KeyUp),
-  Music,
+  FilePathList (FilePathList, filePathList'paths),
+  KeyboardKey (KeyDown, KeyEnter, KeyGrave, KeyLeft, KeyNull, KeyRight, KeySpace, KeyUp),
   Sound (sound'frameCount),
  )
 import Raylib.Util (WindowResources, raylibApplication)
 import Raylib.Util.Colors qualified as Colors
-import System.Exit (exitSuccess)
 
 import Audio qualified (scanAudio)
-import Control.Monad.Reader (MonadReader (ask), ReaderT (ReaderT, runReaderT), withReaderT)
-import Foreign (Storable (peek), castPtr, newStablePtr, nullPtr)
-import Raylib.Core.Audio (getMasterVolume, getMusicTimeLength, initAudioDevice, isMusicReady, loadMusicStream, loadSound, playMusicStream, playSound, setMasterVolume, updateMusicStream, updateSound)
+import Control.Exception (try)
+import Control.Monad.Reader (MonadReader (ask), ReaderT (runReaderT), withReaderT)
+import Data.List (isPrefixOf, isSuffixOf, partition, tails)
+import Foreign (Storable (peek))
+import Raylib.Core.Audio (getMasterVolume, initAudioDevice, loadMusicStream, loadSound, pauseSound, playMusicStream, playSound, resumeSound, setMasterVolume, stopSound)
+import System.Exit (exitWith, exitFailure)
 
 default (Int)
 
@@ -89,6 +92,7 @@ data AppState = AppState
   , _menu :: AppMenu
   , _window :: WindowResources
   , _counter :: Integer
+  , _shouldPlay :: Bool
   }
 
 makeLenses ''AppState
@@ -101,6 +105,7 @@ defaultState w =
     , _menu = Quit
     , _window = w
     , _counter = 0
+    , _shouldPlay = True
     }
 
 initApp :: IO AppState
@@ -201,7 +206,7 @@ appModeMenu = do
 
 appModeMediaControl :: AppStateIO
 appModeMediaControl = do
-  maybeUpdatedState <- runMaybeT $ do
+  appState <- runMaybeT $ do
     appState <- lift ask
     lift2 $ do
       clearBackground (Color 10 60 90 10)
@@ -209,41 +214,66 @@ appModeMediaControl = do
       drawTxtFromPrompt Colors.rayWhite $ title <$> appState._mediaFiles
     fileDropped <- lift2 isFileDropped
     guard fileDropped
-    filePtr <- lift2 c'loadDroppedFiles
-    fileContent <- lift2 $ peek filePtr
-    lift2 $ c'unloadDroppedFiles filePtr
-    song <- lift2 $ loadSound (head fileContent.filePathList'paths) appState._window
-    let songConfig =
-          Song
-            { media = song
-            , duration = song.sound'frameCount
-            , title = show fileContent.filePathList'paths
-            }
-    lift2 $ return $ appState & mediaFiles %~ (++ [songConfig])
-  maybe ask return maybeUpdatedState
+    filePtrs <- lift2 loadDroppedFiles
+    files <- case checkIfSupportedFileType filePtrs of
+      Left e -> lift2 $ putStrLn e >> return (FilePathList 0 [])
+      Right files' -> lift2 $ return files'
+    songs <-
+      files.filePathList'paths
+        `forM` \song ->
+          lift2 $ loadSound song appState._window
+    let songConfigs =
+            (songs `zip` [0 ..])
+              `for` \(song, i) ->
+                Song
+                  { media = song
+                  , duration = song.sound'frameCount
+                  , title = formatTitle $ files.filePathList'paths !! i
+                  }
+    lift2 $ do
+      putStrLn "INFO: Loading files:" >> print `mapM_` (title <$> songConfigs)
+      return $ appState & mediaFiles %~ (++ songConfigs)
+  maybe ask return appState
  where
-  lift2 = lift . lift
+  formatTitle title = case dropWhile (not . isPrefixOf "- ") (tails title) of
+    [] -> "" -- If "- " is not found, return an empty string
+    (x : _) -> drop 2 x -- Otherwise, return the first occurrence of "- "
+  checkIfSupportedFileType :: FilePathList -> Either String FilePathList
+  checkIfSupportedFileType filePathList = do
+    let fileNames = filePathList.filePathList'paths
+        (flacFiles, _) = partition (\path -> ".flac" `isSuffixOf` path) fileNames
+    if
+      | not (null flacFiles) -> Left "ERROR: Flac files not supported"
+      | all (".mp3" `isSuffixOf`) fileNames -> return filePathList
+      | otherwise -> Left "ERROR: File type not supported"
+
+lift2 = lift . lift
+for = flip map
 
 mainLoop :: AppState -> IO AppState
 mainLoop appState = do
   beginDrawing
   appState' <- runReaderT loop appState
-  let meadiaQueued = not . null $ appState'._mediaFiles
-  appState'' <-
-    if meadiaQueued
-      then
-        if
-          | appState'._counter > (head appState'._mediaFiles).duration `div` 800 -> do
-              print appState'._counter
-              return $ (appState' & counter %~ const 0) & mediaFiles %~ pop
-          | appState'._counter == 0 -> do
-              playSound (head appState'._mediaFiles).media
-              return $ appState' & counter %~ (+ 1)
-          | otherwise -> return $ appState' & counter %~ (+ 1)
-      else return appState'
+  appState'' <- runReaderT appControlAudio appState'
   endDrawing
-  return appState''
+  runReaderT playMusic appState''
  where
+  playMusic :: AppStateIO
+  playMusic = do
+    appState <- runMaybeT $ do
+      appState <- lift ask
+      guard (not . null $ appState._mediaFiles)
+      lift2 $
+        if
+          | not appState._shouldPlay -> return appState
+          | appState._counter > (head appState._mediaFiles).duration `div` 800 -> do
+              return $ (appState & counter %~ const 0) & mediaFiles %~ pop
+          | appState._counter == 0 -> do
+              playSound (head appState._mediaFiles).media
+              return $ appState & counter %~ (+ 1)
+          | otherwise -> return $ appState & counter %~ (+ 1)
+    maybe ask return appState
+
   loop :: AppStateIO = do
     appState' <- switchMode
     withReaderT (const appState') $ case appState._mode of
@@ -251,9 +281,23 @@ mainLoop appState = do
       AppModeMenu -> appModeMenu
       AppModeMediaControl -> appModeMediaControl
 
+  appControlAudio :: AppStateIO = do
+    shouldCycleAudio <- lift $ isKeyPressed KeySpace
+    appState <- ask
+    let currentMediaFiles = appState._mediaFiles
+    if
+      | shouldCycleAudio && appState._shouldPlay && not (null currentMediaFiles) -> do
+          lift $ pauseSound (head appState._mediaFiles).media
+          return $ appState & shouldPlay %~ not
+      | shouldCycleAudio && not appState._shouldPlay && not (null currentMediaFiles) -> do
+          lift $ resumeSound (head appState._mediaFiles).media
+          return $ appState & shouldPlay %~ not
+      | shouldCycleAudio -> return $ appState & shouldPlay %~ not
+      | otherwise -> return appState
+
   switchMode :: AppStateIO
   switchMode = do
-    shouldGoNext <- lift $ isKeyPressed KeySpace
+    shouldGoNext <- lift $ isKeyPressed KeyGrave
     if shouldGoNext
       then return $ appState & mode %~ nextCycle
       else return appState
