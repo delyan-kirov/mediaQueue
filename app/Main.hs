@@ -10,15 +10,12 @@
 
 module Main where
 
-import Control.Lens (makeLenses, (%~), (&))
-import Control.Monad (forM, forM_, guard, unless, when)
+import Control.Lens (makeLenses, reuse, (%~), (&))
+import Control.Monad (forM, forM_, guard, unless, void, when)
 import Control.Monad.Trans (lift)
-import Control.Monad.Trans.Maybe (MaybeT, runMaybeT)
-import Data.Semigroup
+import Control.Monad.Trans.Maybe (runMaybeT)
 import Raylib.Core (
   beginDrawing,
-  c'loadDroppedFiles,
-  c'unloadDroppedFiles,
   clearBackground,
   closeWindow,
   endDrawing,
@@ -33,25 +30,24 @@ import Raylib.Core (
   setTargetFPS,
   windowShouldClose,
  )
-import Raylib.Core.Text (drawText, drawTextEx, getFontDefault)
+import Raylib.Core.Text (c'loadFont, c'loadFontEx, c'unloadFont, drawText, drawTextEx, getFontDefault, loadFont, loadFontEx)
 import Raylib.Types (
   Color (Color),
-  FilePathList (FilePathList, filePathList'paths),
+  FilePathList (filePathList'paths),
+  Font,
   KeyboardKey (KeyDown, KeyEnter, KeyGrave, KeyLeft, KeyNull, KeyRight, KeySpace, KeyUp),
   Music,
-  Sound (sound'frameCount),
   Vector2 (Vector2),
  )
 import Raylib.Util (WindowResources, raylibApplication)
 import Raylib.Util.Colors qualified as Colors
 
 import Audio qualified (scanAudio)
-import Control.Exception (try)
 import Control.Monad.Reader (MonadReader (ask), ReaderT (runReaderT), withReaderT)
-import Data.List (isPrefixOf, isSuffixOf, partition, tails)
-import Foreign (Storable (peek))
-import Raylib.Core.Audio (getMasterVolume, getMusicTimeLength, initAudioDevice, loadMusicStream, loadSound, pauseMusicStream, pauseSound, playMusicStream, playSound, resumeMusicStream, resumeSound, seekMusicStream, setMasterVolume, stopSound, updateMusicStream)
-import System.Exit (exitFailure, exitWith)
+import Data.List (isSuffixOf)
+import Foreign (Storable (peek), nullPtr)
+import Foreign.C (newCString)
+import Raylib.Core.Audio (getMasterVolume, getMusicTimeLength, initAudioDevice, loadMusicStream, pauseMusicStream, playMusicStream, resumeMusicStream, seekMusicStream, setMasterVolume, updateMusicStream)
 
 default (Int)
 
@@ -72,6 +68,12 @@ data Song = Song
   , duration :: Integer
   }
   deriving (Show)
+
+instance Cycle [a] where
+  nextCycle [] = []
+  nextCycle (x : xs) = xs ++ [x]
+  previousCycle [] = []
+  previousCycle xs = last xs : init xs
 
 instance Cycle AppMode where
   nextCycle appMode = case appMode of
@@ -97,6 +99,7 @@ data AppState = AppState
   , _window :: WindowResources
   , _counter :: Integer
   , _shouldPlay :: Bool
+  , _font :: [Font]
   }
 
 makeLenses ''AppState
@@ -110,17 +113,26 @@ defaultState w =
     , _window = w
     , _counter = 0
     , _shouldPlay = True
+    , _font = []
     }
 
 initApp :: IO AppState
 initApp = do
   w <- initWindow 1200 800 "Pokiclone"
   setTargetFPS 60
+  fontReg <- loadFont' "./resources/sever-sans-font/SeverSansBook-nRRvP.ttf"
+  fontBold <- loadFont "./resources/asimov-font/AsimovWide-0qrG.otf" w
   initAudioDevice
   song <- loadMusicStream "/home/dk/Music/17 - Maglietta e Jeans.mp3" w
   playMusicStream song
   setExitKey KeyNull
-  return $ defaultState w
+  return $ defaultState w & font %~ (++ [fontReg, fontBold])
+ where
+  loadFont' :: String -> IO Font
+  loadFont' txt = do
+    txt'c <- newCString txt
+    font' <- c'loadFontEx txt'c 32 nullPtr 0
+    peek font'
 
 type AppStateIO = ReaderT AppState IO AppState
 
@@ -132,59 +144,59 @@ data TextF = TextF
   , color :: Color -- Text color
   }
 
-drawTextF :: TextF -> IO ()
+drawTextF :: TextF -> AppStateIO
 drawTextF textf = do
   -- void DrawTextEx(Font font, const char *text, Vector2 position, float fontSize, float spacing, Color tint); // Draw text using font and additional parameters
-  defaultFont <- getFontDefault
-  screenWidth <- getScreenWidth
-  screenHeight <- getScreenHeight
-  drawTextEx
-    defaultFont
-    textf.txtString
-    ( Vector2
-        (textf.xAxis * (0.001 * fromIntegral screenWidth))
-        (textf.yAxis + (0.1 * fromIntegral screenHeight))
-    )
-    (textf.size * 0.2 + 0.01 * fromIntegral (screenWidth + screenHeight))
-    2.0
-    textf.color
+  appState <- ask
+  screenWidth <- lift getScreenWidth
+  screenHeight <- lift getScreenHeight
+  lift $
+    drawTextEx
+      (appState._font !! 0)
+      textf.txtString
+      ( Vector2
+          (textf.xAxis * (0.001 * fromIntegral screenWidth))
+          (textf.yAxis + (0.1 * fromIntegral screenHeight))
+      )
+      (textf.size * 0.2 + 0.01 * fromIntegral (screenWidth + screenHeight))
+      2.0
+      textf.color
+  return appState
 
-drawTxtFromPrompt :: Color -> [String] -> IO ()
+drawTxtFromPrompt :: Color -> [String] -> AppStateIO
 drawTxtFromPrompt color text = do
   let n = length text
+  screenHeight <- lift getScreenHeight
   when (n /= 0) $
     [0 .. n - 1] `forM_` \i ->
       drawTextF
-        TextF
-          { txtString = text !! i
-          , xAxis = 50.0
-          , yAxis = 100.0 + 45.0 * fromIntegral i
-          , size = 30.0
-          , color = color
-          }
+        ( TextF
+            { txtString = text !! i
+            , xAxis = 50.0
+            , yAxis = 100.0 + 45.0 * fromIntegral i * (0.001 * fromIntegral screenHeight)
+            , size = 30.0
+            , color = color
+            }
+        )
+  ask
 
 appModeOne :: AppStateIO
 appModeOne = do
-  lift $ do
-    clearBackground (Color 1 20 40 1)
-    drawText "POG" 50 50 40 Colors.rayWhite
+  lift $ clearBackground (Color 1 20 40 1)
   readPrompt
+  drawTextF $ TextF "POG" 50 50 120 Colors.rayWhite
  where
   readPrompt :: AppStateIO
   readPrompt = do
-    appState <- ask
-    lift $ do
-      x <- Audio.scanAudio
-      drawTxtFromPrompt
-        Colors.rayWhite
-        (concat x)
-    return appState
+    x <- lift Audio.scanAudio
+    drawTxtFromPrompt
+      Colors.rayWhite
+      (concat x)
 
 appModeMenu :: AppStateIO
 appModeMenu = do
-  lift $ do
-    clearBackground $ Color 1 20 40 1
-    drawTxtFromPrompt Colors.rayWhite (show <$> [Quit, Volume, Brightness])
+  lift $ clearBackground $ Color 1 20 40 1
+  drawTxtFromPrompt Colors.rayWhite (show <$> [Quit, Volume, Brightness])
 
   shouldMoveDown <- lift $ isKeyPressed KeyDown
   shouldMoveUp <- lift $ isKeyPressed KeyUp
@@ -198,7 +210,7 @@ appModeMenu = do
   if
     | shouldLowerVolume -> changeVolume $ \x -> x - 0.1 * x
     | shouldIncreaseVolume -> changeVolume $ \x -> x + 0.1 * x
-    | otherwise -> displayMenu appState'
+    | otherwise -> void displayMenu
   return appState'
  where
   changeVolume update = lift $ do
@@ -206,35 +218,36 @@ appModeMenu = do
     let newVolume = update masterVolume
     when (newVolume < 0.999 && newVolume > 0.001) $ setMasterVolume newVolume
 
-  displayMenu appState =
-    let menuPosition = case appState._menu of
-          Quit -> 0
-          Volume -> 1
-          Brightness -> 2
-     in lift $
-          case appState._menu of
-            Quit -> drawTxtFromPrompt Colors.red [show Quit, "", ""]
-            Volume -> drawTxtFromPrompt Colors.red ["", show Volume, ""]
-            Brightness -> drawTxtFromPrompt Colors.red ["", "", show Brightness]
+  displayMenu :: AppStateIO
+  displayMenu = do
+    appState <- ask
+    case appState._menu of
+      Quit -> drawTxtFromPrompt Colors.red [show Quit, "", ""]
+      Volume -> drawTxtFromPrompt Colors.red ["", show Volume, ""]
+      Brightness -> drawTxtFromPrompt Colors.red ["", "", show Brightness]
 
 appModeMediaControl :: AppStateIO
 appModeMediaControl = do
+  appState <- ask
   appState <- runMaybeT $ do
-    appState <- lift ask
-    lift2 $ do
-      clearBackground (Color 10 60 90 10)
-      drawText "Media Control Panel" 50 50 40 Colors.rayWhite
-      drawTxtFromPrompt Colors.rayWhite $ title <$> appState._mediaFiles
+    lift2 $ clearBackground $ Color 1 20 40 1
+    lift $ void $ drawTextF $ TextF "Music Queue" 50 10 120 Colors.rayWhite
+    let currSongs = take 15 (title <$> appState._mediaFiles)
+    lift $ void $ drawTxtFromPrompt (Color 255 0 255 255) currSongs
+    (lift . void) $
+      drawTxtFromPrompt
+        Colors.red
+        ( case currSongs of
+            [] -> []
+            _ -> head currSongs : replicate (length currSongs - 1) ""
+        )
     fileDropped <- lift2 isFileDropped
     guard fileDropped
     filePtrs <- lift2 loadDroppedFiles
-    files <- case checkIfSupportedFileType filePtrs of
-      Left e -> lift2 $ putStrLn e >> return (FilePathList 0 [])
-      Right files' -> lift2 $ return files'
+    let files = filter (\x -> ".mp3" `isSuffixOf` x) filePtrs.filePathList'paths
     songs <-
-      files.filePathList'paths
-        `forM` \song ->
-          lift2 $ loadMusicStream song appState._window
+      files `forM` \song ->
+        lift2 $ loadMusicStream song appState._window
     songConfigs <-
       (songs `zip` [0 ..])
         `forM` \(song, i) -> do
@@ -243,24 +256,19 @@ appModeMediaControl = do
             Song
               { media = song
               , duration = floor musicDuration
-              , title = formatTitle $ files.filePathList'paths !! i
+              , title = formatTitle $ files !! i
               }
     lift2 $ do
       putStrLn "INFO: Loading files:" >> print `mapM_` (title <$> songConfigs)
       return $ appState & mediaFiles %~ (++ songConfigs)
   maybe ask return appState
  where
-  formatTitle title = case dropWhile (not . isPrefixOf "- ") (tails title) of
-    [] -> "" -- If "- " is not found, return an empty string
-    (x : _) -> drop 2 x -- Otherwise, return the first occurrence of "- "
-  checkIfSupportedFileType :: FilePathList -> Either String FilePathList
-  checkIfSupportedFileType filePathList = do
-    let fileNames = filePathList.filePathList'paths
-        (flacFiles, _) = partition (\path -> ".flac" `isSuffixOf` path) fileNames
-    if
-      | not (null flacFiles) -> Left "ERROR: Flac files not supported"
-      | all (".mp3" `isSuffixOf`) fileNames -> return filePathList
-      | otherwise -> Left "ERROR: File type not supported"
+  formatTitle xs =
+    if '/' `elem` xs
+      then case dropWhile (/= '/') xs of
+        '/' : rest -> formatTitle rest
+        x -> x
+      else take (length xs - 4) xs
 
 lift2 = lift . lift
 for = flip map
@@ -270,11 +278,28 @@ mainLoop appState = do
   beginDrawing
   appState' <- runReaderT loop appState
   appState'' <- runReaderT appControlAudio appState'
-  let currentSongs = appState''._mediaFiles
+  appState''' <- runReaderT shouldCycleNextSong appState''
+  let currentSongs = appState'''._mediaFiles
   unless (null currentSongs) $ updateMusicStream (head currentSongs).media
   endDrawing
-  runReaderT playMusic appState''
+  runReaderT playMusic appState'''
  where
+  shouldCycleNextSong :: AppStateIO
+  shouldCycleNextSong = do
+    -- unloadMusicStream
+    shouldGoNext <- lift $ isKeyPressed KeyDown
+    shouldGoPrev <- lift $ isKeyPressed KeyUp
+    appState <- ask
+    if
+      | shouldGoNext && appState._mode == AppModeMediaControl -> do
+          let shiftedMedia = nextCycle appState._mediaFiles
+          lift $ if null shiftedMedia then return () else playMusicStream (head shiftedMedia).media
+          return $ (appState & mediaFiles %~ const shiftedMedia) & counter %~ const 0
+      | shouldGoPrev && appState._mode == AppModeMediaControl -> do
+          let shiftedMedia = previousCycle appState._mediaFiles
+          lift $ if null shiftedMedia then return () else playMusicStream (head shiftedMedia).media
+          return $ (appState & mediaFiles %~ const shiftedMedia) & counter %~ const 0
+      | otherwise -> return appState
   playMusic :: AppStateIO
   playMusic = do
     appState <- runMaybeT $ do
@@ -300,21 +325,30 @@ mainLoop appState = do
 
   appControlAudio :: AppStateIO = do
     shouldCycleAudio <- lift $ isKeyPressed KeySpace
-    shouldSeekAhead <- lift $ isKeyPressed KeyRight
-    shouldSeekBack <- lift $ isKeyPressed KeyLeft
+    shouldSeekAhead <- lift $ isKeyDown KeyRight
+    shouldSeekBack <- lift $ isKeyDown KeyLeft
+    let seekTime = 50 :: Integer
+        currentTime = appState._counter
     appState <- ask
     let currentMediaFiles = appState._mediaFiles
+        shouldPlayNow = appState._shouldPlay
+        isInsideMedaControl = appState._mode == AppModeMediaControl
+        thereAreFiles = not $ null currentMediaFiles
+        currentlyPlaying = case currentMediaFiles of x : _ -> x.media; _ -> error "Unreachable pattern"
     if
-      | shouldCycleAudio && appState._shouldPlay && not (null currentMediaFiles) -> do
-          lift $ pauseMusicStream (head currentMediaFiles).media
+      | shouldCycleAudio && shouldPlayNow && thereAreFiles -> do
+          lift $ pauseMusicStream currentlyPlaying
           return $ appState & shouldPlay %~ not
-      | shouldCycleAudio && not appState._shouldPlay && not (null currentMediaFiles) -> do
-          lift $ resumeMusicStream (head currentMediaFiles).media
+      | shouldCycleAudio && not shouldPlayNow && thereAreFiles -> do
+          lift $ resumeMusicStream currentlyPlaying
           return $ appState & shouldPlay %~ not
       | shouldCycleAudio -> return $ appState & shouldPlay %~ not
-      | shouldSeekAhead && appState._mode == AppModeMediaControl && not (null currentMediaFiles) -> do
-          lift (seekMusicStream (head currentMediaFiles).media 10.0)
-          return appState
+      | shouldSeekAhead && isInsideMedaControl && thereAreFiles -> do
+          lift (seekMusicStream currentlyPlaying (fromIntegral $ currentTime `div` 60))
+          return $ appState & counter %~ (+ seekTime)
+      | shouldSeekBack && isInsideMedaControl && thereAreFiles -> do
+          lift (seekMusicStream currentlyPlaying (fromIntegral $ currentTime `div` 60))
+          return $ appState & counter %~ (\x -> if x > 0 then x - seekTime else x)
       | otherwise -> return appState
 
   switchMode :: AppStateIO
@@ -336,6 +370,3 @@ teardown :: AppState -> IO ()
 teardown appState = closeWindow appState._window
 
 $(raylibApplication 'initApp 'mainLoop 'shouldClose 'teardown)
-
-{--
- --}
