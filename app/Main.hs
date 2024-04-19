@@ -5,12 +5,14 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TemplateHaskell #-}
-
 {-# OPTIONS -Wall #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Redundant ^." #-}
 
 module Main where
 
-import Control.Lens (makeLenses, reuse, (%~), (&))
+import Control.Lens (makeLenses, (%~), (&), (.~), (^.))
 import Control.Monad (forM, forM_, guard, unless, void, when)
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Maybe (runMaybeT)
@@ -37,17 +39,20 @@ import Raylib.Types (
   Font,
   KeyboardKey (KeyDown, KeyEnter, KeyGrave, KeyLeft, KeyNull, KeyRight, KeySpace, KeyUp),
   Music,
+  Rectangle (Rectangle),
+  Texture (Texture, texture'height, texture'width),
   Vector2 (Vector2),
  )
 import Raylib.Util (WindowResources, raylibApplication)
 import Raylib.Util.Colors qualified as Colors
 
-import Audio qualified (scanAudio)
 import Control.Monad.Reader (MonadReader (ask), ReaderT (runReaderT), withReaderT)
 import Data.List (isSuffixOf)
 import Foreign (Storable (peek), nullPtr)
 import Foreign.C (newCString)
 import Raylib.Core.Audio (getMasterVolume, getMusicTimeLength, initAudioDevice, loadMusicStream, pauseMusicStream, playMusicStream, resumeMusicStream, seekMusicStream, setMasterVolume, updateMusicStream)
+import Raylib.Core.Shapes (drawRectangle)
+import Raylib.Core.Textures (drawTexturePro, loadTexture)
 
 default (Int)
 
@@ -63,7 +68,7 @@ instance Cycle [a] where
   previousCycle [] = []
   previousCycle xs = last xs : init xs
 
-data AppMode = AppModeOne | AppModeMenu | AppModeMediaControl deriving (Eq)
+-- ffmpeg -i input.flac -ab 320k -map_metadata 0 -id3v2_version 3 output.mp3
 
 data Song = Song
   { media :: Music
@@ -72,11 +77,12 @@ data Song = Song
   }
   deriving (Show)
 
+data AppMode = AppModeMenu | AppModeMediaControl deriving (Eq)
+
 instance Cycle AppMode where
   nextCycle appMode = case appMode of
-    AppModeOne -> AppModeMenu
     AppModeMenu -> AppModeMediaControl
-    AppModeMediaControl -> AppModeOne
+    AppModeMediaControl -> AppModeMenu
 
   previousCycle = nextCycle . nextCycle
 
@@ -89,29 +95,44 @@ instance Cycle AppMenu where
 
   previousCycle = nextCycle . nextCycle
 
+data Effect = Effect {_effDuration :: Integer, _current :: Integer, _isOn :: Bool}
+makeLenses ''Effect
+
+data Effects = Effects
+  { _songCounter :: Integer
+  , _pauseEff :: Effect
+  , _resumeEff :: Effect
+  , _playEff :: Effect
+  , _seekForthEff :: Effect
+  , _seekBackEff :: Effect
+  }
+
+data AppIcons = AppIcons
+  { _iconPlay :: Texture
+  , _iconPause :: Texture
+  , _iconResume :: Texture
+  , _iconLeftArrow :: Texture
+  , _iconRightArrow :: Texture
+  }
+
+makeLenses ''AppIcons
+
+makeLenses ''Effects
+
 data AppState = AppState
   { _mode :: AppMode
   , _mediaFiles :: [Song]
   , _menu :: AppMenu
   , _window :: WindowResources
-  , _counter :: Integer
+  , _effect :: Effects
   , _shouldPlay :: Bool
-  , _font :: [Font]
+  , _appIcons :: AppIcons
+  , _fonts :: [Font]
   }
 
 makeLenses ''AppState
 
-defaultState :: WindowResources -> AppState
-defaultState w =
-  AppState
-    { _mode = AppModeOne
-    , _mediaFiles = []
-    , _menu = Quit
-    , _window = w
-    , _counter = 0
-    , _shouldPlay = True
-    , _font = []
-    }
+type AppStateIO = ReaderT AppState IO AppState
 
 --
 
@@ -121,19 +142,56 @@ initApp = do
   setTargetFPS 60
   fontReg <- loadFont' "./resources/sever-sans-font/SeverSansBook-nRRvP.ttf"
   fontBold <- loadFont "./resources/asimov-font/AsimovWide-0qrG.otf" w
+  iconPlay <- loadTexture "./resources/icons/play-button.png" w
+  iconPause <- loadTexture "./resources/icons/pause.png" w
+  iconLeft <- loadTexture "./resources/icons/left-chevron.png" w
+  iconRight <- loadTexture "./resources/icons/right-chevron.png" w
+  iconResume <- loadTexture "./resources/icons/play-button.png" w
+
   initAudioDevice
-  song <- loadMusicStream "/home/dk/Music/17 - Maglietta e Jeans.mp3" w
-  playMusicStream song
   setExitKey KeyNull
-  return $ defaultState w & font %~ (++ [fontReg, fontBold])
+  let thisAppIcons =
+        AppIcons
+          { _iconPlay = iconPlay
+          , _iconPause = iconPause
+          , _iconLeftArrow = iconLeft
+          , _iconRightArrow = iconRight
+          , _iconResume = iconResume
+          }
+      baseEffect =
+        Effect
+          { _effDuration = 30
+          , _current = 0
+          , _isOn = False
+          }
+
+      thisEffects =
+        Effects
+          { _songCounter = 0
+          , _pauseEff = baseEffect
+          , _resumeEff = baseEffect
+          , _playEff = baseEffect
+          , _seekBackEff = baseEffect
+          , _seekForthEff = baseEffect
+          }
+      initialState =
+        AppState
+          { _mode = AppModeMediaControl
+          , _mediaFiles = []
+          , _menu = Quit
+          , _window = w
+          , _effect = thisEffects
+          , _shouldPlay = True
+          , _appIcons = thisAppIcons
+          , _fonts = [fontReg, fontBold]
+          }
+  return initialState
  where
   loadFont' :: String -> IO Font
   loadFont' txt = do
     txt'c <- newCString txt
     font' <- c'loadFontEx txt'c 32 nullPtr 0
     peek font'
-
-type AppStateIO = ReaderT AppState IO AppState
 
 data TextF = TextF
   { txtString :: String -- The text content
@@ -156,7 +214,7 @@ drawTextF textf = do
   screenHeight <- lift getScreenHeight
   lift $
     drawTextEx
-      (appState._font !! 0)
+      (head appState._fonts)
       textf.txtString
       ( Vector2
           (textf.xAxis * (0.001 * fromIntegral screenWidth))
@@ -183,19 +241,6 @@ drawTxtFromPrompt color text = do
             }
         )
   ask
-
-appModeOne :: AppStateIO
-appModeOne = do
-  lift $ clearBackground (Color 1 20 40 1)
-  void readPrompt
-  drawTextF $ TextF "POG" 50 50 120 Colors.rayWhite
- where
-  readPrompt :: AppStateIO
-  readPrompt = do
-    x <- lift Audio.scanAudio
-    drawTxtFromPrompt
-      Colors.rayWhite
-      (concat x)
 
 -- App modes
 
@@ -280,14 +325,15 @@ appModeMediaControl = do
 -- App structure
 
 mainLoop :: AppState -> IO AppState
-mainLoop appState = do
+mainLoop appStateM = do
   beginDrawing
-  appState' <- runReaderT loop appState
+  appState' <- runReaderT loop appStateM
   appState'' <- runReaderT shouldCycleNextSong appState'
+  appState''' <- runReaderT handleEffect appState''
   let currentSongs = appState''._mediaFiles
   unless (null currentSongs) $ updateMusicStream (head currentSongs).media
   endDrawing
-  runReaderT playMusic appState''
+  runReaderT playMusic appState'''
  where
   shouldCycleNextSong :: AppStateIO
   shouldCycleNextSong = do
@@ -301,12 +347,73 @@ mainLoop appState = do
       | shouldGoNext && isInMediaControlMode -> do
           let shiftedMedia = nextCycle appMediaStack
           lift $ unless (null shiftedMedia) $ playMusicStream (head shiftedMedia).media
-          return $ (appState & mediaFiles %~ nextCycle) & counter %~ const 0 & shouldPlay %~ const True
+          return $
+            appState
+              & mediaFiles %~ nextCycle
+              & effect . songCounter %~ (+ 1)
+              & shouldPlay .~ True
       | shouldGoPrev && isInMediaControlMode -> do
           let shiftedMedia = previousCycle appMediaStack
           lift $ unless (null shiftedMedia) $ playMusicStream (head shiftedMedia).media
-          return $ (appState & mediaFiles %~ previousCycle) & counter %~ const 0 & shouldPlay %~ const True
+          return $
+            appState
+              & mediaFiles %~ previousCycle
+              & effect . songCounter .~ 0
+              & shouldPlay .~ True
       | otherwise -> return appState
+
+  drawIcon :: Texture -> IO ()
+  drawIcon iconTexture = do
+    scrWidth <- getScreenWidth
+    scrHeight <- getScreenHeight
+
+    let recWidth = 100
+        recHeight = 100
+        recX = (scrWidth - recWidth) `div` 2
+        recY = (scrHeight - recHeight) `div` 2
+
+        sourceRec =
+          Rectangle
+            0.0
+            0.0
+            (fromIntegral iconTexture.texture'width)
+            (fromIntegral iconTexture.texture'height)
+
+        destRec =
+          Rectangle
+            (fromIntegral recX)
+            (fromIntegral recY)
+            (fromIntegral recWidth)
+            (fromIntegral recHeight)
+
+        origin = Vector2 0.0 0.0
+    drawTexturePro iconTexture sourceRec destRec origin 0.0 Colors.rayWhite
+
+  drawPlayIcon :: AppState -> IO ()
+  drawPlayIcon appState =
+    let iconPlay' = appState ^. appIcons ^. iconPlay
+     in drawIcon iconPlay'
+
+  drawPauseIcon :: AppState -> IO ()
+  drawPauseIcon appState =
+    let iconPause' = appState ^. appIcons ^. iconPause
+     in drawIcon iconPause'
+
+  drawResumeIcon :: AppState -> IO ()
+  drawResumeIcon appState =
+    let iconResume' = appState ^. appIcons ^. iconResume
+     in drawIcon iconResume'
+
+  drawLeftIcon :: AppState -> IO ()
+  drawLeftIcon appState =
+    let iconLeftArrow' = appState ^. appIcons ^. iconLeftArrow
+     in drawIcon iconLeftArrow'
+
+  drawRightIcon :: AppState -> IO ()
+  drawRightIcon appState =
+    let iconRightArrow' = appState ^. appIcons ^. iconRightArrow
+     in drawIcon iconRightArrow'
+
   playMusic :: AppStateIO
   playMusic = do
     shouldCycleAudio <- lift $ isKeyPressed KeySpace
@@ -315,49 +422,152 @@ mainLoop appState = do
     appState <- runMaybeT $ do
       appState <- lift ask
       guard (not . null $ appState._mediaFiles)
-      let isPlaying = appState._shouldPlay -- use if you want to keep music stopped
-          appCounter = appState._counter
-          currentSong = head appState._mediaFiles
-          seekTime = 50 :: Integer
-          currentTime = appState._counter
-          currentMediaFiles = appState._mediaFiles
-          shouldPlayNow = appState._shouldPlay
-          isInsideMedaControl = appState._mode == AppModeMediaControl
-          thereAreFiles = not $ null currentMediaFiles
-          currentlyPlaying = case currentMediaFiles of x : _ -> x.media; _ -> error "Unreachable pattern"
+      let
+        currentSong = head appState._mediaFiles
+        -- isPlaying = appState._shouldPlay -- use if you want to keep music stopped
+        seekTime = 50
+        currentTime = appState._effect._songCounter
+        currentMediaFiles = appState._mediaFiles
+        shouldPlayNow = appState._shouldPlay
+        isInsideMedaControl = appState._mode == AppModeMediaControl
+        thereAreFiles = not $ null currentMediaFiles
+        initNewSong = appState._effect._songCounter == 0
+        endCurrSong = appState._effect._songCounter > currentSong.duration * 60
+        currentlyPlaying = case currentMediaFiles of x : _ -> x.media; _ -> error "Unreachable pattern"
       lift2 $
         if
-          | appCounter > currentSong.duration * 60 -> do
-              return $ (appState & counter %~ const 0) & mediaFiles %~ pop
-          | appCounter == 0 -> do
+          | endCurrSong ->
+              return $
+                appState
+                  & effect . songCounter .~ 0
+                  & mediaFiles %~ pop
+          | initNewSong -> do
               playMusicStream currentSong.media
-              return $ appState & counter %~ (+ 1)
+              return $
+                appState
+                  & effect . songCounter %~ (+ 1)
           | shouldCycleAudio && shouldPlayNow && thereAreFiles -> do
               pauseMusicStream currentlyPlaying
-              return $ appState & shouldPlay %~ not
+              return $
+                appState
+                  & shouldPlay %~ not
+                  & effect . pauseEff . isOn .~ True
           | shouldCycleAudio && not shouldPlayNow && thereAreFiles -> do
               resumeMusicStream currentlyPlaying
-              return $ appState & shouldPlay %~ not
+              return $
+                appState
+                  & shouldPlay %~ not
+                  & effect . resumeEff . isOn .~ True
           | shouldCycleAudio -> return $ appState & shouldPlay %~ not
           | shouldSeekAhead && isInsideMedaControl && thereAreFiles -> do
               seekMusicStream currentlyPlaying (fromIntegral $ currentTime `div` 60)
-              return $ appState & counter %~ (+ seekTime)
+              return $
+                appState
+                  & effect . songCounter %~ (+ seekTime)
+                  & effect . seekForthEff . isOn .~ True
           | shouldSeekBack && isInsideMedaControl && thereAreFiles -> do
               seekMusicStream currentlyPlaying (fromIntegral $ currentTime `div` 60)
-              return $ appState & counter %~ (\x -> if x > 0 then x - seekTime else x)
-          | otherwise -> return $ appState & counter %~ (+ 1)
+              return $
+                appState
+                  & effect . songCounter %~ (\x -> if x > 0 then x - seekTime else x)
+                  & effect . seekBackEff . isOn .~ True
+          | otherwise -> return $ appState & effect . songCounter %~ (+ 1)
     maybe ask return appState
 
   loop :: AppStateIO = do
-    appState' <- switchMode
-    withReaderT (const appState') $ case appState._mode of
-      AppModeOne -> appModeOne
+    appState <- switchMode
+    withReaderT (const appState) $ case appState._mode of
       AppModeMenu -> appModeMenu
       AppModeMediaControl -> appModeMediaControl
+
+  handleEffect :: AppStateIO = do
+    appState <- ask
+    let playPauseEff =
+          appState ^. effect . pauseEff . isOn
+            && appState ^. effect . pauseEff . effDuration
+              > appState ^. effect . pauseEff . current
+        stopPauseEff =
+          appState ^. effect . pauseEff . effDuration
+            <= appState ^. effect . pauseEff . current
+            --
+        playResumeEff =
+          appState ^. effect . resumeEff . isOn
+            && appState ^. effect . resumeEff . effDuration
+              > appState ^. effect . resumeEff . current
+        stopResumeEff =
+          appState ^. effect . resumeEff . effDuration
+            <= appState ^. effect . resumeEff . current
+            --
+        playRightArrowEff =
+          appState ^. effect . seekForthEff . isOn
+            && appState ^. effect . seekForthEff . effDuration
+              > appState ^. effect . seekForthEff . current
+        stopRightArrowEff =
+          appState ^. effect . seekForthEff . effDuration
+            <= appState ^. effect . seekForthEff . current
+            --
+        playLeftArrowEff =
+          appState ^. effect . seekBackEff . isOn
+            && appState ^. effect . seekBackEff . effDuration
+              > appState ^. effect . seekBackEff . current
+        stopLeftArrowEff =
+          appState ^. effect . seekBackEff . effDuration
+            <= appState ^. effect . seekBackEff . current
+
+    lift $
+      if
+        | playPauseEff && playResumeEff -> do
+            return $
+              appState
+                & effect . pauseEff . current %~ (+ 1)
+                & effect . resumeEff . current %~ (+ 1)
+        | playPauseEff -> do
+            drawPauseIcon appState
+            return $
+              appState
+                & effect . pauseEff . current %~ (+ 1)
+        | stopPauseEff -> do
+            return $
+              appState
+                & effect . pauseEff . isOn %~ not
+                & effect . pauseEff . current .~ 0
+        | playRightArrowEff -> do
+            drawRightIcon appState
+            return $
+              appState
+                & effect . seekForthEff . current %~ (+ 1)
+        | stopRightArrowEff -> do
+            return $
+              appState
+                & effect . seekForthEff . isOn %~ not
+                & effect . seekForthEff . current .~ 0
+        | playLeftArrowEff -> do
+            drawLeftIcon appState
+            return $
+              appState
+                & effect . seekBackEff . current %~ (+ 1)
+        | stopLeftArrowEff -> do
+            return $
+              appState
+                & effect . seekBackEff . isOn %~ not
+                & effect . seekBackEff . current .~ 0
+        | playResumeEff -> do
+            -- drawRecInMiddle 100 100 (Color 200 100 200 50)
+            drawResumeIcon appState
+            return $
+              appState
+                & effect . resumeEff . current %~ (+ 1)
+        | stopResumeEff ->
+            return $
+              appState
+                & effect . resumeEff . isOn %~ not
+                & effect . resumeEff . current .~ 0
+        | otherwise -> return appState
 
   switchMode :: AppStateIO
   switchMode = do
     shouldGoNext <- lift $ isKeyPressed KeyGrave
+    appState <- ask
     if shouldGoNext
       then return $ appState & mode %~ nextCycle
       else return appState

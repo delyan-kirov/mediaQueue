@@ -99,6 +99,7 @@ executable pokiclone
                  , lens
                  , mtl
                  , transformers
+                 , containers
 
     -- Directories containing source files.
     hs-source-dirs:   app
