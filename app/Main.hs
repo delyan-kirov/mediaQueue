@@ -7,7 +7,6 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS -Wall #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-
 {-# HLINT ignore "Redundant ^." #-}
 
 module Main where
@@ -32,7 +31,7 @@ import Raylib.Core (
   setTargetFPS,
   windowShouldClose,
  )
-import Raylib.Core.Text (c'loadFont, c'loadFontEx, c'unloadFont, drawText, drawTextEx, getFontDefault, loadFont, loadFontEx)
+import Raylib.Core.Text (drawTextEx, loadFont, c'loadFontEx)
 import Raylib.Types (
   Color (Color),
   FilePathList (filePathList'paths),
@@ -40,7 +39,7 @@ import Raylib.Types (
   KeyboardKey (KeyDown, KeyEnter, KeyGrave, KeyLeft, KeyNull, KeyRight, KeySpace, KeyUp),
   Music,
   Rectangle (Rectangle),
-  Texture (Texture, texture'height, texture'width),
+  Texture (texture'height, texture'width),
   Vector2 (Vector2),
  )
 import Raylib.Util (WindowResources, raylibApplication)
@@ -51,7 +50,6 @@ import Data.List (isSuffixOf)
 import Foreign (Storable (peek), nullPtr)
 import Foreign.C (newCString)
 import Raylib.Core.Audio (getMasterVolume, getMusicTimeLength, initAudioDevice, isMusicStreamPlaying, loadMusicStream, pauseMusicStream, playMusicStream, resumeMusicStream, seekMusicStream, setMasterVolume, updateMusicStream)
-import Raylib.Core.Shapes (drawRectangle)
 import Raylib.Core.Textures (drawTexturePro, loadTexture)
 
 default (Int)
