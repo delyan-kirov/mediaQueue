@@ -50,7 +50,7 @@ import Control.Monad.Reader (MonadReader (ask), ReaderT (runReaderT), withReader
 import Data.List (isSuffixOf)
 import Foreign (Storable (peek), nullPtr)
 import Foreign.C (newCString)
-import Raylib.Core.Audio (getMasterVolume, getMusicTimeLength, initAudioDevice, loadMusicStream, pauseMusicStream, playMusicStream, resumeMusicStream, seekMusicStream, setMasterVolume, updateMusicStream)
+import Raylib.Core.Audio (getMasterVolume, getMusicTimeLength, initAudioDevice, isMusicStreamPlaying, loadMusicStream, pauseMusicStream, playMusicStream, resumeMusicStream, seekMusicStream, setMasterVolume, updateMusicStream)
 import Raylib.Core.Shapes (drawRectangle)
 import Raylib.Core.Textures (drawTexturePro, loadTexture)
 
@@ -110,9 +110,12 @@ data Effects = Effects
 data AppIcons = AppIcons
   { _iconPlay :: Texture
   , _iconPause :: Texture
-  , _iconResume :: Texture
   , _iconLeftArrow :: Texture
   , _iconRightArrow :: Texture
+  , _iconPlayStatic :: Texture
+  , _iconPauseStatic :: Texture
+  , _iconLeftArrowStatic :: Texture
+  , _iconRightArrowStatic :: Texture
   }
 
 makeLenses ''AppIcons
@@ -147,6 +150,11 @@ initApp = do
   iconLeft <- loadTexture "./resources/icons/left-chevron.png" w
   iconRight <- loadTexture "./resources/icons/right-chevron.png" w
   iconResume <- loadTexture "./resources/icons/play-button.png" w
+  -- Load static icons
+  iconPlayStatic <- loadTexture "./resources/icons/play-button-static.png" w
+  iconPauseStatic <- loadTexture "./resources/icons/pause-static.png" w
+  iconLeftStatic <- loadTexture "./resources/icons/left-chevron-static.png" w
+  iconRightStatic <- loadTexture "./resources/icons/right-chevron-static.png" w
 
   initAudioDevice
   setExitKey KeyNull
@@ -156,11 +164,20 @@ initApp = do
           , _iconPause = iconPause
           , _iconLeftArrow = iconLeft
           , _iconRightArrow = iconRight
-          , _iconResume = iconResume
+          , _iconPlayStatic = iconPlayStatic
+          , _iconPauseStatic = iconPauseStatic
+          , _iconLeftArrowStatic = iconLeftStatic
+          , _iconRightArrowStatic = iconRightStatic
           }
-      baseEffect =
+      playPauseEffect =
         Effect
           { _effDuration = 30
+          , _current = 0
+          , _isOn = False
+          }
+      seekEffect =
+        Effect
+          { _effDuration = 10
           , _current = 0
           , _isOn = False
           }
@@ -168,11 +185,11 @@ initApp = do
       thisEffects =
         Effects
           { _songCounter = 0
-          , _pauseEff = baseEffect
-          , _resumeEff = baseEffect
-          , _playEff = baseEffect
-          , _seekBackEff = baseEffect
-          , _seekForthEff = baseEffect
+          , _pauseEff = playPauseEffect
+          , _resumeEff = playPauseEffect
+          , _playEff = playPauseEffect
+          , _seekBackEff = seekEffect
+          , _seekForthEff = seekEffect
           }
       initialState =
         AppState
@@ -236,11 +253,13 @@ drawTxtFromPrompt color text = do
             { txtString = text !! i
             , xAxis = 50.0
             , yAxis = 100.0 + 45.0 * fromIntegral i * (0.001 * fromIntegral screenHeight)
-            , size = 50.0
+            , size = 100.0
             , color = color
             }
         )
   ask
+
+iconPadding = 20
 
 -- App modes
 
@@ -280,12 +299,13 @@ appModeMenu = do
 appModeMediaControl :: AppStateIO
 appModeMediaControl = do
   appState <- ask
-  lift $ clearBackground $ Color 1 20 40 1
-  void $ drawTextF $ TextF "Music Queue" 50 10 120 Colors.rayWhite
-  let currSongs = take 15 (title <$> appState._mediaFiles)
-  void $ drawTxtFromPrompt (Color 255 200 230 255) currSongs
   let firstSongColor = Color 255 100 250 250
-  void $ drawTxtFromPrompt firstSongColor (getCurrentSong currSongs)
+      currSongs = take 12 (title <$> appState._mediaFiles)
+  lift $ clearBackground $ Color 1 20 40 1
+  void $
+    drawTextF (TextF "Music Queue" 50 10 120 Colors.rayWhite)
+      >> drawTxtFromPrompt (Color 255 200 230 255) currSongs
+      >> drawTxtFromPrompt firstSongColor (getCurrentSong currSongs)
   -- Ckeck if files are dropped
   appState <- runMaybeT $ do
     fileDropped <- lift2 isFileDropped
@@ -320,13 +340,17 @@ appModeMediaControl = do
         x -> x
       else
         let xs' = take (length xs - 4) xs
-         in dropWhile (== ' ') $ drop 1 $ dropWhile (/= '-') xs'
+            xs'' = dropWhile (== ' ') $ drop 1 $ dropWhile (/= '-') xs'
+         in if length xs'' > 35
+              then take 35 xs'' ++ "..."
+              else xs''
 
 -- App structure
 
 mainLoop :: AppState -> IO AppState
 mainLoop appStateM = do
   beginDrawing
+  drawStaticIcons appStateM
   appState' <- runReaderT loop appStateM
   appState'' <- runReaderT shouldCycleNextSong appState'
   appState''' <- runReaderT handleEffect appState''
@@ -335,6 +359,64 @@ mainLoop appStateM = do
   endDrawing
   runReaderT playMusic appState'''
  where
+  iconSize :: IO Int
+  iconSize = do
+    scrWidth <- getScreenWidth
+    scrHeigt <- getScreenHeight
+    return $ (scrWidth * scrHeigt) `div` 8000 + 20
+  drawStaticIcons :: AppState -> IO ()
+  drawStaticIcons appState = do
+    scrWidth <- getScreenWidth
+    scrHeight <- getScreenHeight
+    recSize <- iconSize
+    isAnythingPlaying <- case media <$> appState._mediaFiles of
+      [] -> return False
+      currSong : _ -> isMusicStreamPlaying currSong
+    let
+      iconPlayTexture = appState ^. appIcons ^. iconPlayStatic
+      iconPauseTexture = appState ^. appIcons ^. iconPauseStatic
+      iconLeftTexture = appState ^. appIcons ^. iconLeftArrowStatic
+      iconRightTexture = appState ^. appIcons ^. iconRightArrowStatic
+      recX'play = (scrWidth - recSize) `div` 2
+      recX'left = (scrWidth - recSize) `div` 2 - (recSize + iconPadding)
+      recX'right = (scrWidth - recSize) `div` 2 + (recSize + iconPadding)
+      recY = (scrHeight - recSize) - iconPadding
+
+      sourceRec =
+        Rectangle
+          0.0
+          0.0
+          (fromIntegral iconPlayTexture.texture'width)
+          (fromIntegral iconPlayTexture.texture'height)
+
+      destRec'play =
+        Rectangle
+          (fromIntegral recX'play)
+          (fromIntegral recY)
+          (fromIntegral recSize)
+          (fromIntegral recSize)
+
+      destRec'left =
+        Rectangle
+          (fromIntegral recX'left)
+          (fromIntegral recY)
+          (fromIntegral recSize)
+          (fromIntegral recSize)
+
+      destRec'right =
+        Rectangle
+          (fromIntegral recX'right)
+          (fromIntegral recY)
+          (fromIntegral recSize)
+          (fromIntegral recSize)
+
+      origin = Vector2 0.0 0.0
+    if isAnythingPlaying
+      then drawTexturePro iconPlayTexture sourceRec destRec'play origin 0.0 Colors.rayWhite
+      else drawTexturePro iconPauseTexture sourceRec destRec'play origin 0.0 Colors.rayWhite
+    drawTexturePro iconRightTexture sourceRec destRec'right origin 0.0 Colors.rayWhite
+    drawTexturePro iconLeftTexture sourceRec destRec'left origin 0.0 Colors.rayWhite
+
   shouldCycleNextSong :: AppStateIO
   shouldCycleNextSong = do
     -- unloadMusicStream
@@ -362,15 +444,15 @@ mainLoop appStateM = do
               & shouldPlay .~ True
       | otherwise -> return appState
 
-  drawIcon :: Texture -> IO ()
-  drawIcon iconTexture = do
+  drawPlayIcon :: AppState -> IO ()
+  drawPlayIcon appState = do
     scrWidth <- getScreenWidth
     scrHeight <- getScreenHeight
+    recSize <- iconSize
 
-    let recWidth = 100
-        recHeight = 100
-        recX = (scrWidth - recWidth) `div` 2
-        recY = (scrHeight - recHeight) `div` 2
+    let iconTexture = appState ^. appIcons ^. iconPlay
+        recX = (scrWidth - recSize) `div` 2
+        recY = (scrHeight - recSize) - iconPadding
 
         sourceRec =
           Rectangle
@@ -383,36 +465,90 @@ mainLoop appStateM = do
           Rectangle
             (fromIntegral recX)
             (fromIntegral recY)
-            (fromIntegral recWidth)
-            (fromIntegral recHeight)
+            (fromIntegral recSize)
+            (fromIntegral recSize)
 
         origin = Vector2 0.0 0.0
     drawTexturePro iconTexture sourceRec destRec origin 0.0 Colors.rayWhite
 
-  drawPlayIcon :: AppState -> IO ()
-  drawPlayIcon appState =
-    let iconPlay' = appState ^. appIcons ^. iconPlay
-     in drawIcon iconPlay'
-
-  drawPauseIcon :: AppState -> IO ()
-  drawPauseIcon appState =
-    let iconPause' = appState ^. appIcons ^. iconPause
-     in drawIcon iconPause'
-
-  drawResumeIcon :: AppState -> IO ()
-  drawResumeIcon appState =
-    let iconResume' = appState ^. appIcons ^. iconResume
-     in drawIcon iconResume'
-
   drawLeftIcon :: AppState -> IO ()
-  drawLeftIcon appState =
-    let iconLeftArrow' = appState ^. appIcons ^. iconLeftArrow
-     in drawIcon iconLeftArrow'
+  drawLeftIcon appState = do
+    scrWidth <- getScreenWidth
+    scrHeight <- getScreenHeight
+    recSize <- iconSize
+
+    let iconTexture = appState ^. appIcons ^. iconLeftArrow
+        recX = (scrWidth - recSize) `div` 2 - (recSize + iconPadding)
+        recY = (scrHeight - recSize) - iconPadding
+        sourceRec =
+          Rectangle
+            0.0
+            0.0
+            (fromIntegral iconTexture.texture'width)
+            (fromIntegral iconTexture.texture'height)
+
+        destRec =
+          Rectangle
+            (fromIntegral recX)
+            (fromIntegral recY)
+            (fromIntegral recSize)
+            (fromIntegral recSize)
+
+        origin = Vector2 0.0 0.0
+    drawTexturePro iconTexture sourceRec destRec origin 0.0 Colors.rayWhite
 
   drawRightIcon :: AppState -> IO ()
-  drawRightIcon appState =
-    let iconRightArrow' = appState ^. appIcons ^. iconRightArrow
-     in drawIcon iconRightArrow'
+  drawRightIcon appState = do
+    scrWidth <- getScreenWidth
+    scrHeight <- getScreenHeight
+    recSize <- iconSize
+
+    let iconTexture = appState ^. appIcons ^. iconRightArrow
+        recX = (scrWidth - recSize) `div` 2 + (recSize + iconPadding)
+        recY = (scrHeight - recSize) - iconPadding
+        sourceRec =
+          Rectangle
+            0.0
+            0.0
+            (fromIntegral iconTexture.texture'width)
+            (fromIntegral iconTexture.texture'height)
+
+        destRec =
+          Rectangle
+            (fromIntegral recX)
+            (fromIntegral recY)
+            (fromIntegral recSize)
+            (fromIntegral recSize)
+
+        origin = Vector2 0.0 0.0
+    drawTexturePro iconTexture sourceRec destRec origin 0.0 Colors.rayWhite
+
+  drawPauseIcon :: AppState -> IO ()
+  drawPauseIcon appState = do
+    scrWidth <- getScreenWidth
+    scrHeight <- getScreenHeight
+    recSize <- iconSize
+
+    let iconTexture = appState ^. appIcons ^. iconPause
+        recX = (scrWidth - recSize) `div` 2
+        recY = (scrHeight - recSize) - iconPadding
+
+        sourceRec =
+          Rectangle
+            0.0
+            0.0
+            (fromIntegral iconTexture.texture'width)
+            (fromIntegral iconTexture.texture'height)
+
+        destRec =
+          Rectangle
+            (fromIntegral recX)
+            (fromIntegral recY)
+            (fromIntegral recSize)
+            (fromIntegral recSize)
+
+        origin = Vector2 0.0 0.0
+    drawTexturePro iconTexture sourceRec destRec origin 0.0 Colors.rayWhite
 
   playMusic :: AppStateIO
   playMusic = do
@@ -482,6 +618,9 @@ mainLoop appStateM = do
 
   handleEffect :: AppStateIO = do
     appState <- ask
+    {-- Lenses make this code unfactorable basically
+     -- you cannot abstract the effect
+     -- the attemp of doing so makes the type checker go crazy --}
     let playPauseEff =
           appState ^. effect . pauseEff . isOn
             && appState ^. effect . pauseEff . effDuration
@@ -489,7 +628,7 @@ mainLoop appStateM = do
         stopPauseEff =
           appState ^. effect . pauseEff . effDuration
             <= appState ^. effect . pauseEff . current
-            --
+        --
         playResumeEff =
           appState ^. effect . resumeEff . isOn
             && appState ^. effect . resumeEff . effDuration
@@ -497,7 +636,7 @@ mainLoop appStateM = do
         stopResumeEff =
           appState ^. effect . resumeEff . effDuration
             <= appState ^. effect . resumeEff . current
-            --
+        --
         playRightArrowEff =
           appState ^. effect . seekForthEff . isOn
             && appState ^. effect . seekForthEff . effDuration
@@ -505,7 +644,7 @@ mainLoop appStateM = do
         stopRightArrowEff =
           appState ^. effect . seekForthEff . effDuration
             <= appState ^. effect . seekForthEff . current
-            --
+        --
         playLeftArrowEff =
           appState ^. effect . seekBackEff . isOn
             && appState ^. effect . seekBackEff . effDuration
@@ -517,6 +656,7 @@ mainLoop appStateM = do
     lift $
       if
         | playPauseEff && playResumeEff -> do
+            -- prevent spam
             return $
               appState
                 & effect . pauseEff . current %~ (+ 1)
@@ -552,8 +692,7 @@ mainLoop appStateM = do
                 & effect . seekBackEff . isOn %~ not
                 & effect . seekBackEff . current .~ 0
         | playResumeEff -> do
-            -- drawRecInMiddle 100 100 (Color 200 100 200 50)
-            drawResumeIcon appState
+            drawPlayIcon appState
             return $
               appState
                 & effect . resumeEff . current %~ (+ 1)
@@ -581,6 +720,7 @@ shouldClose appState = do
   return $ (appState._menu == Quit && pressedEnter) || closeEarly
 
 teardown :: AppState -> IO ()
+-- unload textures
 teardown appState = closeWindow appState._window
 
 $(raylibApplication 'initApp 'mainLoop 'shouldClose 'teardown)
