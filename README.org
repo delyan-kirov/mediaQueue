@@ -1,25 +1,20 @@
 * Pokiclone
 
-* Idea of gameplay
-The game has the following components
-- Game menu
-- Game map
-- Level screen
+** To implement
 
-** Game menu
-- Audio
-  1. Volume up
-  2. Volume down
-  3. Valume none
-- Display
-  1. Brigtness up
-  2. Brightness down
-- Quit
+- [ ] Make control menu into a floating panel
+- [ ] Merge all app modes
+- [ ] Add current duration slider
+- [ ] Add volume slider
+- [ ] Add proper song parsing
 
-** Game map
-- Menu of levels
+** Clean repo
 
-** Level 
-A pet style game similar to pokemon or wow pet battles
-- Text in
-- Key out
+- [ ] Remove useless files
+- [ ] Split program into modules
+
+** Add actual ReadMe
+
+- [ ] Give resources
+- [ ] Add media and preview
+- [ ] Create website article
