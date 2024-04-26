@@ -1,20 +1,66 @@
-* Pokiclone
+* MusicQueue
 
-** To implement
+MusicQueue is a simple music player that can add music files in a queue. It's cross-platform, written in Haskell with the help of C and [[https://www.raylib.com/][Raylib]]. Feel free to try it out and mess with the code if you want some inspiration on how to develop a multi-media application in a functional style. This application is not a good replacement for a decent modern music player, so keep your expectations limited. Some of the problems are discussed below.
 
-- [ ] Make control menu into a floating panel
-- [ ] Merge all app modes
-- [ ] Add current duration slider
-- [ ] Add volume slider
-- [ ] Add proper song parsing
+** Scope of the project
 
-** Clean repo
+The raison d'être of this project is to create a simple, somewhat usable multi-media application that is cross-platform, written in a functional style using the ~The Elm Architecture~ design pattern. I think I succeeded in that, if I can say so myself. 😎 It's not perfect and I would not recommend using it or even developing applications in Haskell specifically using Raylib, but it does mean it's possible and quite usable.
 
-- [ ] Remove useless files
-- [ ] Split program into modules
+** Preview
 
-** Add actual ReadMe
+[[]]
 
-- [ ] Give resources
-- [ ] Add media and preview
-- [ ] Create website article
+** Run
+
+The easiest way is to install Cabal and the Haskell compiler using [[https://www.haskell.org/ghcup/][ghcup]], if you don't have them already. Then run the following command:
+
+#+BEGIN_SRC bash
+cabal run --constraint="h-raylib -detect-platform"
+#+END_SRC
+
+Or alternatively:
+
+#+BEGIN_SRC bash
+cabal run
+#+END_SRC
+
+** Install
+
+It's possible to also install it system-wide with a little bit of hacking. Run the command:
+
+#+BEGIN_SRC bash
+cabal install
+#+END_SRC
+
+This will create a file in `~/.cabal/bin/`. If you add this to your path, you will be able to launch the application. You won't be able to load the assets however, unless you run it in that directory. You can, however, create a `~/.config/MusicQueue` directory, copy-paste the assets there, and change the code to load the assets from there. The relevant function is `initApp`:
+
+#+BEGIN_SRC haskell
+initApp :: IO AppState
+initApp = do
+  w <- initWindow 600 800 "Pokiclone"
+  setTargetFPS 60
+  fontReg <- loadFont' "./resources/sever-sans-font/SeverSansBook-nRRvP.ttf"
+  fontBold <- loadFont "./resources/asimov-font/AsimovWide-0qrG.otf" w
+  iconPlay <- loadTexture "./resources/icons/play-button.png" w
+  iconPause <- loadTexture "./resources/icons/pause.png" w
+  iconLeft <- loadTexture "./resources/icons/left-chevron.png" w
+  iconRight <- loadTexture "./resources/icons/right-chevron.png" w
+  iconResume <- loadTexture "./resources/icons/play-button.png" w
+  -- Load static icons
+  iconPlayStatic <- loadTexture "./resources/icons/play-button-static.png" w
+  iconPauseStatic <- loadTexture "./resources/icons/pause-static.png" w
+  iconLeftStatic <- loadTexture "./resources/icons/left-chevron-static.png" w
+  iconRightStatic <- loadTexture "./resources/icons/right-chevron-static.png" w
+...
+#+END_SRC
+
+** Problems
+
+You may encounter some inconvenient behavior. One problem is that audio will stop playing if you run the application in the background. This is because the window won't continue rendering in that state, which is unlikely what you would expect or need from a music player.
+
+Another problem is that audio is played frame per frame. This is not a good idea, as dropping frames will also interrupt the stream. Older software also had this problem and it's not something easily fixable the way this application is designed, because it uses ~Raylib~ directly for audio, instead of doing it through pipewire or whatever other API your system has. This is nice because the application is multi-platform, but it does limit control of the sound buffer.
+
+Peeking into a the music stream is not great. The supported formats are ~mp3~, ~mp4~, ~wav~, and a few others. Of these, ~mp3~ and ~mp4~ files are inherently unpeekable. There are solutions to this, but those are beyond the scope of this project.
+
+Lastly, formats like ~flac~ are not supported, because that's beyond the scope of this project.
+
