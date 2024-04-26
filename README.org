@@ -8,7 +8,7 @@ The raison d'être of this project is to create a simple, somewhat usable multi-
 
 ** Preview
 
-[[]]
+[[https://github.com/delyan-kirov/pokiclone/blob/master/resources/musicStack.gif]]
 
 ** Run
 
