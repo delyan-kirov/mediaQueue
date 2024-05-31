@@ -51,6 +51,7 @@ import Foreign (Storable (peek), nullPtr)
 import Foreign.C (newCString)
 import Raylib.Core.Audio (getMasterVolume, getMusicTimeLength, initAudioDevice, isMusicStreamPlaying, loadMusicStream, pauseMusicStream, playMusicStream, resumeMusicStream, seekMusicStream, setMasterVolume, updateMusicStream)
 import Raylib.Core.Textures (drawTexturePro, loadTexture)
+import AppInit (hello)
 
 default (Int)
 
