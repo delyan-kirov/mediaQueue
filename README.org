@@ -54,13 +54,3 @@ initApp = do
 ...
 #+END_SRC
 
-** Problems
-
-You may encounter some inconvenient behavior. One problem is that audio will stop playing if you run the application in the background. This is because the window won't continue rendering in that state, which is unlikely what you would expect or need from a music player.
-
-Another problem is that audio is played frame per frame. This is not a good idea, as dropping frames will also interrupt the stream. Older software also had this problem and it's not something easily fixable the way this application is designed, because it uses ~Raylib~ directly for audio, instead of doing it through pipewire or whatever other API your system has. This is nice because the application is multi-platform, but it does limit control of the sound buffer.
-
-Peeking into a the music stream is not great. The supported formats are ~mp3~, ~mp4~, ~wav~, and a few others. Of these, ~mp3~ and ~mp4~ files are inherently unpeekable. There are solutions to this, but those are beyond the scope of this project.
-
-Lastly, formats like ~flac~ are not supported, because that's beyond the scope of this project.
-
